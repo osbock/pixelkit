@@ -49,8 +49,8 @@ class Settings:
     kerf: float = 0.15             # width of the laser cut, mm
     tray_style: str = "box"        # box | layered | none
     tile_clearance: float = 1.0    # total slack between tiles and tray wall
-    lip: float = 1.0               # how far the wall stands above the tiles
-    finger_width: float = 10.0     # target finger length for box joints
+    lip: float = 4.0               # how far the wall stands above the tiles (3+3+4 = 10 mm wall)
+    finger_width: float = 6.0      # target finger (tab) length for box joints
     joint_play: float = 0.0        # extra gap per finger joint (+ looser, - tighter)
     frame_width: float = 10.0      # frame border for the layered style
     engrave_grid: bool = True
@@ -222,9 +222,12 @@ def outline_piece(name, adds, subs, kerf):
 
 def segments(length, target, min_n):
     """Split `length` into an odd number of equal segments near `target`."""
-    n = max(1, int(round(length / max(target, 1e-6))))
-    if n % 2 == 0:
-        n -= 1
+    exact = length / max(target, 1e-6)
+    n = max(1, int(exact) // 2 * 2 + 1)  # odd count just above or below exact
+    if n > exact and n - 2 >= 1 and length / (n - 2) - target < target - length / n:
+        n -= 2
+    elif n < exact and length / n - target > target - length / (n + 2):
+        n += 2
     while n < min_n:
         n += 2
     s = length / n
