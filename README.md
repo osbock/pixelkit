@@ -21,6 +21,9 @@ compensation built in.
   for colored stock.
 - **Pattern sheet** (when a picture is given): a numbered color grid with a
   legend of tile counts per color, including spares.
+- **Scaled image** (when a picture is given): `<picture name>_scaled.png`,
+  with one pixel per tile in the final colors. It is meant for touching up
+  in any paint program, then loading back as the picture.
 - **Notes file:** dimensions, tile counts, paint counts per color and the
   settings used.
 - **Kerf test sheet** (the **Kerf test** button or `--kerf-test`): seven
@@ -121,6 +124,10 @@ Each tile takes the most common color in its area, so pixel art stays crisp.
   tab piece into the plate above it, then set **Kerf** to the value of the
   pair that fits snugly by hand. If they're all too loose or too tight, set
   Kerf to the best one and cut the test again.
+- To fix individual tiles, edit `<picture name>_scaled.png` from the output
+  folder and choose it as the image, keeping the same grid size. It is then
+  used exactly as drawn. The exceptions are colors closer than about 24 RGB
+  steps, which are merged, and a color count over Max colors.
 - Then cut a small kit (for example 6 × 6 tiles) to tune `tile_clearance`
   for how the tiles fit in the tray.
 - Low walls with few corner segments become butt joints. The notes file says

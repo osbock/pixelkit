@@ -982,6 +982,30 @@ def generate_kerf_test(s):
     return path, [(path.stem, w, h, items)], notes
 
 
+def scaled_image_path(s, out):
+    """Where to save the grid-sized pattern image: <original name>_scaled.png,
+    or <emoji name>_scaled.png for an emoji."""
+    if is_emoji(s.image):
+        code, _, name = s.image[len(EMOJI_PREFIX):].partition(" ")
+        stem = "".join(ch if ch.isalnum() else "-" for ch in (name or code)).strip("-")
+    else:
+        stem = Path(s.image).stem
+    if not stem.endswith("_scaled"):
+        stem += "_scaled"
+    return out / f"{stem}.png"
+
+
+def write_scaled_image(path, pattern):
+    """One pixel per tile, in the final palette. Editing it and loading it
+    back as the image (same grid size) uses it 1:1."""
+    from PIL import Image
+
+    grid = pattern["grid"]
+    im = Image.new("RGB", (len(grid[0]), len(grid)))
+    im.putdata([pattern["palette"][idx] for row in grid for idx in row])
+    im.save(path)
+
+
 def generate(s):
     """Write all SVGs plus a notes file. Returns (files, notes, sheets, pattern)."""
     sheets, pattern, needed, notes = build(s)
@@ -996,6 +1020,14 @@ def generate(s):
         path = out / f"{s.name}_pattern.svg"
         write_pattern_svg(path, s, pattern, needed)
         files.append(path)
+        path = scaled_image_path(s, out)
+        source = None if is_emoji(s.image) else Path(os.path.expanduser(s.image)).resolve()
+        if path.resolve() == source:
+            notes.append(f"Scaled image not written: {path.name} is the image being used.")
+        else:
+            write_scaled_image(path, pattern)
+            files.append(path)
+            notes.append(f"Scaled image for editing: {path.name} ({s.cols} x {s.rows} px, one pixel per tile)")
     text = [summary(s), ""] + notes + [
         "",
         "Red = cut, blue = engrave/score. Units are mm.",
