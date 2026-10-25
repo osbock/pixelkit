@@ -1,0 +1,2 @@
+# Needed only for pattern images and emoji; the rest of pixelkit uses the standard library.
+Pillow>=9.1

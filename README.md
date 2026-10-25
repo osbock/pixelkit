@@ -32,8 +32,12 @@ the picture needs.
 
 - Python 3.9 or newer, with Tkinter (included with the python.org installers
   and Homebrew's `python-tk`)
-- [Pillow](https://pypi.org/project/Pillow/), needed only for pictures:
-  `pip install pillow`
+- [Pillow](https://pypi.org/project/Pillow/), needed only for pictures and
+  emoji:
+
+  ```bash
+  pip install -r requirements.txt
+  ```
 
 ## Usage
 
