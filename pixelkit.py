@@ -81,6 +81,7 @@ class Piece:
         self.cuts = []      # [(points, closed)]
         self.engraves = []  # [(points, closed)]
         self.texts = []     # [(x, y, size, text, angle, anchor)]
+        self.picture = None  # tile area corners [top-left, top-right, bottom-left], for previews
 
     def bbox(self):
         pts = [p for pl, _ in self.cuts + self.engraves for p in pl]
@@ -98,6 +99,7 @@ class Piece:
         out.cuts = [([f(*p) for p in pl], c) for pl, c in self.cuts]
         out.engraves = [([f(*p) for p in pl], c) for pl, c in self.engraves]
         out.texts = [(*f(x, y), s, t, a + dangle, an) for x, y, s, t, a, an in self.texts]
+        out.picture = [f(*pt) for pt in self.picture] if self.picture else None
         return out
 
     def moved(self, dx, dy):
@@ -251,6 +253,7 @@ def engrave_base(s, piece, ox, oy, pattern):
     p = s.pixel
     ox += s.tile_clearance / 2
     oy += s.tile_clearance / 2
+    piece.picture = [(ox, oy), (ox + s.cols * p, oy), (ox, oy + s.rows * p)]
     if s.engrave_grid:
         for i in range(s.cols + 1):
             x = ox + i * p
@@ -820,7 +823,7 @@ def summary(s):
 
 
 def generate(s):
-    """Write all SVGs plus a notes file. Returns (files, notes, sheets)."""
+    """Write all SVGs plus a notes file. Returns (files, notes, sheets, pattern)."""
     sheets, pattern, needed, notes = build(s)
     out = Path(os.path.expanduser(s.output_dir))
     out.mkdir(parents=True, exist_ok=True)
@@ -843,7 +846,7 @@ def generate(s):
     path = out / f"{s.name}_notes.txt"
     path.write_text("\n".join(text) + "\n\nSettings:\n" + json.dumps(asdict(s), indent=2) + "\n")
     files.append(path)
-    return files, notes, sheets
+    return files, notes, sheets, pattern
 
 
 # --------------------------------------------------------------------------
@@ -974,7 +977,8 @@ def run_gui():
     nav = ttk.Frame(side)
     nav.pack(fill="x")
     sheet_label = tk.StringVar(value="Press Preview to lay out the sheets")
-    state = {"sheets": [], "i": 0}
+    state = {"sheets": [], "i": 0, "pattern": None}
+    show_picture = tk.BooleanVar(value=False)
 
     def draw():
         canvas.delete("all")
@@ -986,7 +990,19 @@ def run_gui():
         k = min((cw - 20) / w, (ch - 20) / h)
         ox, oy = (cw - w * k) / 2, (ch - h * k) / 2
         canvas.create_rectangle(ox, oy, ox + w * k, oy + h * k, fill="#e8d9b5", outline="#999")
+        pattern = state["pattern"] if show_picture.get() else None
         for pc in items:
+            if pattern and pc.picture:
+                (x0, y0), (x1, y1), (x2, y2) = pc.picture
+                nc, nr = len(pattern["grid"][0]), len(pattern["grid"])
+                ux, uy = (x1 - x0) / nc, (y1 - y0) / nc
+                vx, vy = (x2 - x0) / nr, (y2 - y0) / nr
+                for j, row in enumerate(pattern["grid"]):
+                    for i, idx in enumerate(row):
+                        cx, cy = x0 + i * ux + j * vx, y0 + i * uy + j * vy
+                        quad = [(cx, cy), (cx + ux, cy + uy), (cx + ux + vx, cy + uy + vy), (cx + vx, cy + vy)]
+                        canvas.create_polygon(*[c for x, y in quad for c in (ox + x * k, oy + y * k)],
+                                              fill=hexcolor(pattern["palette"][idx]), outline="")
             for color, polys in (("#2b4fd6", pc.engraves), ("#d62b2b", pc.cuts)):
                 for pts, closed in polys:
                     flat = [c for x, y in (pts + pts[:1] if closed else pts) for c in (ox + x * k, oy + y * k)]
@@ -995,6 +1011,19 @@ def run_gui():
                 for x, y, size, text, ang, _ in pc.texts:
                     canvas.create_text(ox + x * k, oy + y * k, text=text, fill="#2b4fd6", anchor="s",
                                        angle=-ang, font=("TkDefaultFont", max(6, int(size * k * 0.8))))
+
+    def toggle_picture():
+        if show_picture.get() and not state["pattern"]:
+            log.set("Load a pattern image and press Preview to see the picture in the tray.")
+        elif show_picture.get():
+            # Jump to the sheet holding the tray base if we're looking elsewhere.
+            here = state["sheets"][state["i"]][3] if state["sheets"] else []
+            if not any(pc.picture for pc in here):
+                for n, (_, _, _, items) in enumerate(state["sheets"]):
+                    if any(pc.picture for pc in items):
+                        state["i"] = n
+                        break
+        draw()
 
     def step(d):
         if state["sheets"]:
@@ -1010,23 +1039,23 @@ def run_gui():
     def preview():
         try:
             s = read_settings()
-            sheets, _, _, notes = build(s)
+            sheets, pattern, _, notes = build(s)
         except Exception as e:
             messagebox.showerror("Preview", str(e))
             return
-        state["sheets"], state["i"] = sheets, 0
+        state["sheets"], state["i"], state["pattern"] = sheets, 0, pattern
         draw()
         log.set("\n".join(notes))
 
     def generate_clicked():
         try:
             s = read_settings()
-            files, notes, sheets = generate(s)
+            files, notes, sheets, pattern = generate(s)
             SETTINGS_FILE.write_text(json.dumps(asdict(s), indent=2))
         except Exception as e:
             messagebox.showerror("Generate", str(e))
             return
-        state["sheets"], state["i"] = sheets, 0
+        state["sheets"], state["i"], state["pattern"] = sheets, 0, pattern
         draw()
         log.set("\n".join(notes) + f"\n\nWrote {len(files)} files to {files[0].parent}")
         last_dir["path"] = files[0].parent
@@ -1047,6 +1076,7 @@ def run_gui():
     ttk.Button(nav, text="◀", width=3, command=lambda: step(-1)).pack(side="left")
     ttk.Button(nav, text="▶", width=3, command=lambda: step(1)).pack(side="left")
     ttk.Label(nav, textvariable=sheet_label).pack(side="left", padx=6)
+    ttk.Checkbutton(nav, text="Show picture", variable=show_picture, command=toggle_picture).pack(side="right")
 
     log = tk.StringVar()
     ttk.Label(side, textvariable=log, justify="left", wraplength=460).pack(anchor="w", pady=4)
@@ -1083,7 +1113,7 @@ def run_cli(argv):
     args = ap.parse_args(argv)
     s = Settings(**{f.name: getattr(args, f.name) for f in fields(Settings)})
     try:
-        files, notes, _ = generate(s)
+        files, notes, _, _ = generate(s)
     except ValueError as e:
         sys.exit(f"error: {e}")
     print(summary(s))
