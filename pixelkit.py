@@ -37,6 +37,8 @@ ENGRAVE = "#0000ff"
 STROKE = 0.1
 SETTINGS_FILE = Path.home() / ".pixelkit.json"
 TRAY_STYLES = ["box", "layered", "none"]
+TILE_SHEETS = ["combined", "per_color"]
+CHOICES = {"tray_style": TRAY_STYLES, "tile_sheets": TILE_SHEETS}
 
 
 @dataclass
@@ -59,7 +61,8 @@ class Settings:
     sheet_height: float = 400.0
     spacing: float = 3.0           # gap between parts and from sheet edge
     tile_border: float = 5.0       # waste frame around each tile block (0 = none)
-    spare_percent: float = 5.0
+    spare_percent: float = 5.0     # trimmed if spares alone would need another sheet
+    tile_sheets: str = "combined"  # combined (cut, then paint) | per_color (colored stock)
     image: str = ""
     colors: int = 8
     output_dir: str = "~/pixelkit_output"
@@ -359,13 +362,43 @@ def tile_block(name, c, r, s, label=""):
     return piece
 
 
-def tile_blocks(s, count, label, key):
+def tile_capacity(s):
+    """Most tile columns and rows one block can have on a sheet."""
     p = s.pixel + s.kerf
     room_w = s.sheet_width - 2 * s.spacing - 2 * s.tile_border
     room_h = s.sheet_height - 2 * s.spacing - 2 * s.tile_border
     maxc, maxr = int(room_w // p), int(room_h // p)
     if maxc < 1 or maxr < 1:
         raise ValueError("Sheet is too small for even one tile")
+    return maxc, maxr
+
+
+def tiles_to_cut(s, exact):
+    """Picture count plus spares, trimming spares that would only spill onto
+    an extra sheet. Never fewer than `exact`."""
+    maxc, maxr = tile_capacity(s)
+    cap = maxc * maxr
+    want = math.ceil(exact * (1 + s.spare_percent / 100) - 1e-9)
+    return max(exact, min(want, math.ceil(exact / cap) * cap))
+
+
+def share_spares(counts, total):
+    """Split `total` tiles over colors: each gets its count, one spare if
+    there are enough to go round, and a share of the rest of the spares
+    proportional to its count (largest remainder)."""
+    spares = total - sum(counts)
+    base = 1 if spares >= len(counts) else 0
+    spares -= base * len(counts)
+    exact = [spares * c / sum(counts) for c in counts]
+    extra = [int(e) for e in exact]
+    order = sorted(range(len(counts)), key=lambda i: -(exact[i] - extra[i]))
+    for i in order[:spares - sum(extra)]:
+        extra[i] += 1
+    return [c + base + e for c, e in zip(counts, extra)]
+
+
+def tile_blocks(s, count, label, key):
+    maxc, maxr = tile_capacity(s)
     blocks = []
     n = count
     while n > 0:
@@ -384,48 +417,80 @@ def tile_blocks(s, count, label, key):
 # Layout and SVG output
 # --------------------------------------------------------------------------
 
-def pack(pieces, sw, sh, gap):
-    """Shelf-pack pieces onto as many sheets as needed. Returns a list of
-    (width, height, [placed pieces]); oversize parts get a sheet of their own."""
-    oriented = []
-    for pc in pieces:
-        pc = pc.normalized()
-        w, h = pc.size
-        fits = w <= sw - 2 * gap and h <= sh - 2 * gap
-        fits_rot = h <= sw - 2 * gap and w <= sh - 2 * gap
-        # Keep parts upright unless they only fit rotated, or are tall slivers
-        # (walls) that shelf-pack far better lying down.
-        if fits_rot and (not fits or h > 2 * w):
-            pc = pc.rotated()
-        oriented.append(pc)
-    oriented.sort(key=lambda pc: -pc.size[1])
+class _Sheet:
+    """Max-rects free-space tracker for one sheet. Every part is padded by
+    `gap` on its right and bottom; the free area starts `gap` in from the
+    top-left, so parts end up `gap` apart and `gap` from every edge."""
 
-    sheets = []  # each: {"items": [...], "shelves": [[y, h, x]], "w":, "h":}
-    for pc in oriented:
+    def __init__(self, w, h, gap):
+        self.w, self.h, self.gap = w, h, gap
+        self.free = [(gap, gap, w - gap, h - gap)]  # (x0, y0, x1, y1)
+        self.items = []
+
+    def best_spot(self, w, h):
+        """Best-short-side-fit position for a w x h part, or None."""
+        w, h = w + self.gap, h + self.gap
+        best = None
+        for x0, y0, x1, y1 in self.free:
+            fw, fh = x1 - x0, y1 - y0
+            if w <= fw + 1e-9 and h <= fh + 1e-9:
+                score = (min(fw - w, fh - h), max(fw - w, fh - h))
+                if best is None or score < best[0]:
+                    best = (score, x0, y0)
+        return best
+
+    def place(self, pc, x, y):
         w, h = pc.size
-        placed = False
+        self.items.append(pc.moved(x, y))
+        px1, py1 = x + w + self.gap, y + h + self.gap
+        out = []
+        for f in self.free:
+            x0, y0, x1, y1 = f
+            if x >= x1 or px1 <= x0 or y >= y1 or py1 <= y0:
+                out.append(f)
+                continue
+            if x > x0:
+                out.append((x0, y0, x, y1))
+            if px1 < x1:
+                out.append((px1, y0, x1, y1))
+            if y > y0:
+                out.append((x0, y0, x1, y))
+            if py1 < y1:
+                out.append((x0, py1, x1, y1))
+        self.free = [a for a in out if not any(
+            a != b and b[0] <= a[0] and b[1] <= a[1] and a[2] <= b[2] and a[3] <= b[3] for b in out)]
+
+
+def pack(pieces, sw, sh, gap):
+    """Pack pieces onto as few sheets as possible, trying each part both
+    upright and rotated 90 degrees. Returns a list of (width, height,
+    [placed pieces]); a part too big for the sheet gets a sheet of its own."""
+    parts = sorted((pc.normalized() for pc in pieces),
+                   key=lambda pc: (-max(pc.size), -pc.size[0] * pc.size[1]))
+    sheets = []
+    for pc in parts:
+        rot = pc.rotated()
+        best = None
         for sheet in sheets:
-            for shelf in sheet["shelves"]:
-                if h <= shelf[1] and shelf[2] + w <= sheet["w"] - gap:
-                    sheet["items"].append(pc.moved(shelf[2], shelf[0]))
-                    shelf[2] += w + gap
-                    placed = True
-                    break
-            if placed:
-                break
-            last = sheet["shelves"][-1]
-            y = last[0] + last[1] + gap
-            if y + h <= sheet["h"] - gap and gap + w <= sheet["w"] - gap:
-                sheet["shelves"].append([y, h, gap + w + gap])
-                sheet["items"].append(pc.moved(gap, y))
-                placed = True
-                break
-        if not placed:
-            sheet = {"w": max(sw, w + 2 * gap), "h": max(sh, h + 2 * gap), "items": [],
-                     "shelves": [[gap, h, gap + w + gap]]}
-            sheet["items"].append(pc.moved(gap, gap))
-            sheets.append(sheet)
-    return [(sh_["w"], sh_["h"], sh_["items"]) for sh_ in sheets]
+            for cand, penalty in ((pc, 0), (rot, 1e-6)):  # prefer upright on ties
+                spot = sheet.best_spot(*cand.size)
+                if spot and (best is None or (spot[0], penalty) < best[0]):
+                    best = ((spot[0], penalty), sheet, cand, spot[1], spot[2])
+            if best:
+                break  # fill earlier sheets first
+        if best:
+            _, sheet, cand, x, y = best
+            sheet.place(cand, x, y)
+            continue
+        w, h = pc.size
+        if w + 2 * gap > sw or h + 2 * gap > sh:
+            rw, rh = rot.size
+            if rw + 2 * gap <= sw and rh + 2 * gap <= sh:
+                pc, w, h = rot, rw, rh
+        sheet = _Sheet(max(sw, w + 2 * gap), max(sh, h + 2 * gap), gap)
+        sheet.place(pc, gap, gap)
+        sheets.append(sheet)
+    return [(s.w, s.h, s.items) for s in sheets]
 
 
 def _d(pts, closed):
@@ -647,7 +712,7 @@ def write_pattern_svg(path, s, pattern, needed):
         out.append(f'<text x="{m - 1.2:.2f}" y="{m + (j + 0.5) * cell + lf * 0.35:.2f}" font-size="{lf:.2f}" '
                    f'text-anchor="end" fill="#555">{j + 1}</text>')
     y = m + gh + 8
-    out.append(f'<text x="{m}" y="{y:.1f}" font-size="3.5" font-weight="bold">#   color      in picture   tiles to cut</text>')
+    out.append(f'<text x="{m}" y="{y:.1f}" font-size="3.5" font-weight="bold">#   color      in picture   with spares</text>')
     for idx, rgb in enumerate(pattern["palette"]):
         y += 7
         out.append(f'<rect x="{m}" y="{y - 4.5:.1f}" width="5" height="5" fill="{hexcolor(rgb)}" stroke="#333" stroke-width="0.2"/>')
@@ -672,8 +737,9 @@ def validate(s):
             problems.append(f"{k} must be positive.")
     if s.kerf < 0 or s.kerf >= s.pixel:
         problems.append("Kerf must be between 0 and the pixel size.")
-    if s.tray_style not in TRAY_STYLES:
-        problems.append(f"Tray style must be one of {TRAY_STYLES}.")
+    for key, options in CHOICES.items():
+        if getattr(s, key) not in options:
+            problems.append(f"{key} must be one of {options}.")
     if s.tray_style == "box" and s.finger_width < 2 * s.kerf + 1:
         problems.append("Finger width is too small.")
     if s.engrave_numbers and not s.image:
@@ -702,22 +768,28 @@ def build(s):
                 notes.append(f"WARNING: a tray part needs a {w:.0f} x {h:.0f} mm sheet, larger than the bed.")
                 break
 
-    if pattern:
+    if pattern and s.tile_sheets == "per_color":
         groups = [(f"c{i + 1:02d}", f"C{i + 1} {hexcolor(rgb)}", n)
                   for i, (rgb, n) in enumerate(zip(pattern["palette"], pattern["counts"]))]
     else:
         groups = [("all", "", s.cols * s.rows)]
     needed = []
     for key, label, count in groups:
-        want = math.ceil(count * (1 + s.spare_percent / 100) - 1e-9)
-        blocks = tile_blocks(s, want, label, key)
+        blocks = tile_blocks(s, tiles_to_cut(s, count), label, key)
         packed = pack(blocks, s.sheet_width, s.sheet_height, s.spacing)
         cut = sum(_tile_count(b, s) for b in blocks)
         needed.append(cut)
         for n, (w, h, items) in enumerate(packed, 1):
             sheets.append((f"{s.name}_tiles_{key}_{n}", w, h, items))
-        notes.append(f"Tiles {label or 'all'}: {count} in picture, {cut} cut "
+        spare = f"{cut - count} spare"
+        if cut < math.ceil(count * (1 + s.spare_percent / 100) - 1e-9):
+            spare += f", trimmed from {s.spare_percent:g}% to stay on {len(packed)} sheet(s)"
+        notes.append(f"Tiles {label or 'all'}: {count} in picture, {cut} cut ({spare}) "
                      f"on {len(packed)} sheet(s) of {s.tile_thickness:g} mm stock")
+    if pattern and len(groups) == 1:
+        needed = share_spares(pattern["counts"], needed[0])
+        notes.append("Color the tiles after cutting: " + ", ".join(
+            f"C{i + 1} {hexcolor(rgb)} x{n}" for i, (rgb, n) in enumerate(zip(pattern["palette"], needed))))
     return sheets, pattern, needed, notes
 
 
@@ -788,7 +860,7 @@ FORM = [
               ("engrave_grid", "Engrave grid on base"), ("engrave_numbers", "Engrave color numbers")]),
     ("Sheets", [("sheet_width", "Sheet width (mm)"), ("sheet_height", "Sheet height (mm)"),
                 ("spacing", "Part spacing (mm)"), ("tile_border", "Tile sheet border (mm)"),
-                ("spare_percent", "Spare tiles (%)")]),
+                ("spare_percent", "Spare tiles (%)"), ("tile_sheets", "Tile sheets")]),
     ("Pattern (optional)", [("image", "Image"), ("colors", "Max colors")]),
     ("Output", [("output_dir", "Folder"), ("name", "Name prefix")]),
 ]
@@ -880,8 +952,8 @@ def run_gui():
                 else:
                     var = tk.StringVar(value=str(val))
                     ttk.Label(box, text=label).grid(row=r, column=0, sticky="w")
-                    if key == "tray_style":
-                        ttk.Combobox(box, textvariable=var, values=TRAY_STYLES, state="readonly",
+                    if key in CHOICES:
+                        ttk.Combobox(box, textvariable=var, values=CHOICES[key], state="readonly",
                                      width=9).grid(row=r, column=1, sticky="w")
                     else:
                         width = 22 if key in ("image", "output_dir") else 9
@@ -1004,8 +1076,8 @@ def run_cli(argv):
         flag = "--" + f.name.replace("_", "-")
         if isinstance(val, bool):
             ap.add_argument(flag, action=argparse.BooleanOptionalAction, default=val)
-        elif f.name == "tray_style":
-            ap.add_argument(flag, choices=TRAY_STYLES, default=val)
+        elif f.name in CHOICES:
+            ap.add_argument(flag, choices=CHOICES[f.name], default=val)
         else:
             ap.add_argument(flag, type=type(val), default=val)
     args = ap.parse_args(argv)
