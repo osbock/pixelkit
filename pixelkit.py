@@ -459,34 +459,145 @@ def write_svg(path, w, h, items):
 # Pattern image
 # --------------------------------------------------------------------------
 
-def load_pattern(path, cols, rows, max_colors):
-    """Reduce an image to a cols x rows grid of palette indices, most common
-    color first."""
+MAX_GRID = 300  # tiles per side; beyond this the layout gets impractically slow
+
+
+def _rgb_image(path):
     from PIL import Image
 
     im = Image.open(os.path.expanduser(path)).convert("RGBA")
     white = Image.new("RGBA", im.size, (255, 255, 255, 255))
-    im = Image.alpha_composite(white, im).convert("RGB")
-    if im.size != (cols, rows):
-        box = getattr(Image, "Resampling", Image).BOX
-        im = im.resize((cols, rows), box)
-    if len(im.getcolors(cols * rows)) > max_colors:
-        method = getattr(Image, "Quantize", Image).MEDIANCUT
-        im = im.quantize(colors=max_colors, method=method).convert("RGB")
-    pixels = list(im.getdata())
+    return Image.alpha_composite(white, im).convert("RGB")
+
+
+def reduce_colors(pixels, max_colors, merge_dist=24.0):
+    """Map RGB pixels onto at most `max_colors` colors, then merge colors
+    closer than `merge_dist` (JPEG noise otherwise splits one flat color
+    into several near-identical palette entries)."""
+    from PIL import Image
+
     counts = defaultdict(int)
     for px in pixels:
         counts[px] += 1
+    if len(counts) > max_colors:
+        im = Image.new("RGB", (len(pixels), 1))
+        im.putdata(pixels)
+        method = getattr(Image, "Quantize", Image).MEDIANCUT
+        q = im.quantize(colors=max_colors, method=method)
+        pal = q.getpalette()
+        pixels = [tuple(pal[3 * i:3 * i + 3]) for i in q.getdata()]
+        counts = defaultdict(int)
+        for px in pixels:
+            counts[px] += 1
+    # Greedy merge: fold each color into a more common one if it is close.
+    remap = {}
+    kept = []
+    for c in sorted(counts, key=lambda c: -counts[c]):
+        near = [k for k in kept if math.dist(c, k) < merge_dist]
+        remap[c] = near[0] if near else c
+        if not near:
+            kept.append(c)
+    return [remap[px] for px in pixels]
+
+
+def detect_grid(path):
+    """Guess the pixel-art grid (cols, rows) of an image, e.g. 40 x 50 for
+    art drawn on a 40 x 50 grid and saved at 1856 x 2304 px. Returns None if
+    no clear cell size is found. Works from the spacing between neighbouring
+    color edges, so it copes with AI-generated art whose cells drift."""
+    from PIL import Image, ImageChops
+
+    im = _rgb_image(path)
+    w, h = im.size
+    k = max(1.0, max(w, h) / 1000)  # analyse at most ~1000 px per side
+    if k > 1:
+        im = im.resize((round(w / k), round(h / k)), getattr(Image, "Resampling", Image).NEAREST)
+    sw, sh = im.size
+    gaps = []
+    for axis in (0, 1):
+        if axis == 0:
+            diff = ImageChops.difference(im.crop((1, 0, sw, sh)), im.crop((0, 0, sw - 1, sh)))
+        else:
+            diff = ImageChops.difference(im.crop((0, 1, sw, sh)), im.crop((0, 0, sw, sh - 1)))
+        edges = diff.convert("L").point(lambda v: 255 if v > 16 else 0)
+        n = edges.size[axis]
+        prof = list(edges.resize((n, 1) if axis == 0 else (1, n), Image.BOX).getdata())
+        top = max(prof)
+        if top == 0:
+            continue
+        peaks = [i for i in range(n) if prof[i] > 0.1 * top
+                 and prof[i] == max(prof[max(0, i - 2):i + 3])]
+        peaks = [p for i, p in enumerate(peaks) if i == 0 or p - peaks[i - 1] > 2]
+        gaps += [b - a for a, b in zip(peaks, peaks[1:])]
+    if len(gaps) < 6:
+        return None
+
+    def score(g):  # gaps that are whole multiples of g, single cells counting most
+        s = 0.0
+        for gap in gaps:
+            m = round(gap / g)
+            if m >= 1 and abs(gap - m * g) <= max(1.5, 0.04 * gap):
+                s += 1 / m
+        return s
+
+    cell = max(sorted(set(gaps)), key=lambda g: (score(g), g))
+    singles = [gap for gap in gaps if abs(gap - cell) <= max(1.5, 0.04 * cell)]
+    cell = sum(singles) / len(singles) * k
+    if cell < 1.5:
+        return w, h
+    return max(1, round(w / cell)), max(1, round(h / cell))
+
+
+def load_pattern(path, cols, rows, max_colors):
+    """Reduce an image to a cols x rows grid of palette indices, most common
+    color first.
+
+    An image larger than the grid is scaled down to fit inside it, keeping
+    its aspect ratio; one that already fits is used 1:1. Either way it is
+    centred and any leftover rows/columns are filled with the most common
+    border color. When scaling down, each tile takes the majority color of
+    its area rather than an average, so pixel art stays crisp."""
+    from PIL import Image
+
+    im = _rgb_image(path)
+    w, h = im.size
+    note = f"Pattern: image {w} x {h} px"
+    scale = min(cols / w, rows / h)
+    nw, nh = w, h
+    sub = 1  # samples per tile side used for the majority vote
+    if scale < 1:
+        nw = min(cols, max(1, round(w * scale)))
+        nh = min(rows, max(1, round(h * scale)))
+        sub = max(1, min(8, int(min(w / nw, h / nh))))
+        im = im.resize((nw * sub, nh * sub), getattr(Image, "Resampling", Image).BOX)
+        note += f" scaled to {nw} x {nh} (majority color per tile)"
+    pixels = reduce_colors(list(im.getdata()), max_colors)
+    iw = nw * sub
+    cells = []
+    for j in range(nh):
+        row = []
+        for i in range(nw):
+            votes = defaultdict(int)
+            for y in range(j * sub, (j + 1) * sub):
+                for x in range(i * sub, (i + 1) * sub):
+                    votes[pixels[y * iw + x]] += 1
+            row.append(max(votes, key=votes.get))
+        cells.append(row)
+    if (nw, nh) != (cols, rows):
+        border = cells[0] + cells[-1] + [r[0] for r in cells] + [r[-1] for r in cells]
+        bg = max(set(border), key=border.count)
+        ox, oy = (cols - nw) // 2, (rows - nh) // 2
+        cells = [[cells[j - oy][i - ox] if 0 <= j - oy < nh and 0 <= i - ox < nw else bg
+                  for i in range(cols)] for j in range(rows)]
+        note += f", centred and padded with {hexcolor(bg)}"
+    counts = defaultdict(int)
+    for row in cells:
+        for c in row:
+            counts[c] += 1
     palette = sorted(counts, key=lambda c: (-counts[c], c))
     index = {c: i for i, c in enumerate(palette)}
-    grid = [[index[pixels[j * cols + i]] for i in range(cols)] for j in range(rows)]
-    return {"palette": palette, "counts": [counts[c] for c in palette], "grid": grid}
-
-
-def image_size(path):
-    from PIL import Image
-    with Image.open(os.path.expanduser(path)) as im:
-        return im.size
+    grid = [[index[c] for c in row] for row in cells]
+    return {"palette": palette, "counts": [counts[c] for c in palette], "grid": grid, "note": note}
 
 
 def hexcolor(rgb):
@@ -554,6 +665,8 @@ def validate(s):
     problems = []
     if s.cols < 1 or s.rows < 1:
         problems.append("Columns and rows must be at least 1.")
+    if s.cols > MAX_GRID or s.rows > MAX_GRID:
+        problems.append(f"Columns and rows are limited to {MAX_GRID} tiles each.")
     for k in ("pixel", "tile_thickness", "tray_thickness", "sheet_width", "sheet_height"):
         if getattr(s, k) <= 0:
             problems.append(f"{k} must be positive.")
@@ -575,7 +688,7 @@ def build(s):
     if problems:
         raise ValueError("\n".join(problems))
     pattern = load_pattern(s.image, s.cols, s.rows, s.colors) if s.image else None
-    notes = []
+    notes = [pattern["note"]] if pattern else []
     sheets = []
 
     if s.tray_style != "none":
@@ -729,16 +842,24 @@ def run_gui():
             vars_["image"].set(p)
 
     def grid_from_image():
+        path = vars_["image"].get()
         try:
-            w, h = image_size(vars_["image"].get())
+            found = detect_grid(path)
+            w, h = _rgb_image(path).size
         except Exception as e:
             messagebox.showerror("Image", str(e))
             return
-        if w > 200 or h > 200:
-            if not messagebox.askyesno("Image", f"Image is {w} x {h} px. Use that many tiles anyway?"):
-                return
-        vars_["cols"].set(str(w))
-        vars_["rows"].set(str(h))
+        if found and max(found) <= MAX_GRID:
+            cols, rows = found
+            msg = f"Detected a {cols} x {rows} pixel-art grid in the {w} x {h} px image."
+        else:
+            cols = int(float(vars_["cols"].get() or 20))
+            rows = max(1, round(cols * h / w))
+            msg = (f"No pixel-art grid found in the {w} x {h} px image; kept {cols} columns "
+                   f"and set {rows} rows to match its shape.")
+        vars_["cols"].set(str(cols))
+        vars_["rows"].set(str(rows))
+        log.set(msg)
 
     def browse_dir():
         p = filedialog.askdirectory()
