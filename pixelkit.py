@@ -1010,6 +1010,7 @@ def run_gui():
         p = filedialog.askopenfilename(filetypes=[("Images", "*.png *.gif *.bmp *.jpg *.jpeg *.webp"), ("All", "*")])
         if p:
             vars_["image"].set(p)
+            show_picture.set(True)
 
     def grid_from_image():
         path = vars_["image"].get()
@@ -1084,6 +1085,7 @@ def run_gui():
             if not code:
                 return
             vars_["image"].set(emoji_image_value(code))
+            show_picture.set(True)
             vars_["rows"].set(vars_["cols"].get())
             log.set(f"Emoji: {emoji_index().get(code, code)}, grid set to "
                     f"{vars_['cols'].get()} x {vars_['cols'].get()}.\n{EMOJI_CREDIT}")
@@ -1199,17 +1201,20 @@ def run_gui():
                     canvas.create_text(ox + x * k, oy + y * k, text=text, fill="#2b4fd6", anchor="s",
                                        angle=-ang, font=("TkDefaultFont", max(6, int(size * k * 0.8))))
 
+    def show_tray_sheet():
+        """Jump to the sheet holding the tray base if we're looking elsewhere."""
+        here = state["sheets"][state["i"]][3] if state["sheets"] else []
+        if not any(pc.picture for pc in here):
+            for n, (_, _, _, items) in enumerate(state["sheets"]):
+                if any(pc.picture for pc in items):
+                    state["i"] = n
+                    break
+
     def toggle_picture():
         if show_picture.get() and not state["pattern"]:
-            log.set("Load a pattern image and press Preview to see the picture in the tray.")
+            log.set("Choose an image or an emoji to see the picture in the tray.")
         elif show_picture.get():
-            # Jump to the sheet holding the tray base if we're looking elsewhere.
-            here = state["sheets"][state["i"]][3] if state["sheets"] else []
-            if not any(pc.picture for pc in here):
-                for n, (_, _, _, items) in enumerate(state["sheets"]):
-                    if any(pc.picture for pc in items):
-                        state["i"] = n
-                        break
+            show_tray_sheet()
         draw()
 
     def step(d):
@@ -1222,15 +1227,27 @@ def run_gui():
             info.set(summary(read_settings()))
         except (ValueError, ZeroDivisionError):
             info.set("(enter valid numbers)")
+        # Keep the preview in step with the settings, once typing pauses.
+        if state.get("after"):
+            root.after_cancel(state["after"])
+        state["after"] = root.after(500, lambda: preview(quiet=True))
 
-    def preview():
+    def preview(quiet=False):
+        state["after"] = None
         try:
             s = read_settings()
             sheets, pattern, _, notes = build(s)
         except Exception as e:
-            messagebox.showerror("Preview", str(e))
+            if quiet:
+                log.set(f"Preview not updated: {e}")
+            else:
+                messagebox.showerror("Preview", str(e))
             return
-        state["sheets"], state["i"], state["pattern"] = sheets, 0, pattern
+        same_layout = [st[0] for st in sheets] == [st[0] for st in state["sheets"]]
+        state["sheets"], state["pattern"] = sheets, pattern
+        state["i"] = state["i"] if same_layout else 0
+        if show_picture.get():
+            show_tray_sheet()
         draw()
         log.set("\n".join(notes))
 

@@ -53,8 +53,9 @@ python3 pixelkit.py
 3. **Set grid from image** detects the grid of upscaled pixel art. For an
    AI-generated 1856 × 2304 px image drawn on a 40 × 50 grid, it sets
    40 × 50.
-4. **Preview** lays out the sheets. **Show picture** draws the finished picture
-   in the tray.
+4. The preview on the right updates as you change settings, and ◀ ▶ step
+   through the sheets. **Show picture** draws the finished picture in the
+   tray; it turns on by itself when you choose an image or an emoji.
 5. **Generate SVGs** writes the files to the output folder.
 
 The GUI remembers your last settings in `~/.pixelkit.json`.
