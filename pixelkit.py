@@ -348,6 +348,43 @@ def make_layered(s, pattern):
     return parts, info
 
 
+KERF_TEST_STEP = 0.05
+KERF_TEST_COUNT = 7
+
+
+def kerf_test_values(s):
+    """Kerf values to try, centred on the current setting."""
+    mid = KERF_TEST_COUNT // 2
+    vals = [round(s.kerf + (i - mid) * KERF_TEST_STEP, 3) for i in range(KERF_TEST_COUNT)]
+    return [v + 0.0 for v in vals if v >= 0]  # + 0.0 turns -0.0 into 0.0
+
+
+def make_kerf_test(s):
+    """Pairs of test pieces in tray stock, one pair per kerf value: a plate
+    with two slots, and a tab piece whose two tabs push into them, exactly as
+    the box base and walls fit. Each piece is engraved with its kerf value;
+    the pair that goes together snugly gives the kerf to use."""
+    t, f = s.tray_thickness, s.finger_width
+    q = s.joint_play / 4  # same play per side as the box joints
+    margin = 4.0
+    w = 2 * f + 3 * margin
+    plate_h = margin + t + 9.0
+    tab_h = 10.0
+    xs = [(margin, margin + f), (w - margin - f, w - margin)]
+    size = 3.5
+    pieces = []
+    for k in kerf_test_values(s):
+        label = f"{k:.2f}"
+        slots = [(a - q, margin - q, b + q, margin + t + q) for a, b in xs]
+        plate = outline_piece(f"kerf_{label}_plate", [(0, 0, w, plate_h)], slots, k)
+        plate.texts.append((w / 2, plate_h - 2.5, size, label, 0.0, "middle"))
+        tabs = [(a + q, tab_h, b - q, tab_h + t) for a, b in xs]
+        tab = outline_piece(f"kerf_{label}_tab", [(0, 0, w, tab_h)] + tabs, [], k)
+        tab.texts.append((w / 2, tab_h / 2 + size * 0.35, size, label, 0.0, "middle"))
+        pieces += [plate, tab]
+    return pieces
+
+
 def tile_block(name, c, r, s, label=""):
     """c x r tiles on a shared cut grid, optionally inside a waste border."""
     p = s.pixel + s.kerf
@@ -917,6 +954,34 @@ def summary(s):
     return "\n".join(lines)
 
 
+def generate_kerf_test(s):
+    """Write the kerf test sheet. Returns (path, sheets, notes)."""
+    vals = kerf_test_values(s)
+    pieces = make_kerf_test(s)
+    # One column per kerf value, plate above its tab piece, in a small
+    # file sized to the pieces so it can be placed on a scrap of stock.
+    g = max(s.spacing, 2.0)
+    items, x, h = [], g, 0.0
+    for plate, tab in zip(pieces[::2], pieces[1::2]):
+        plate, tab = plate.normalized(), tab.normalized()
+        items.append(plate.moved(x, g))
+        items.append(tab.moved(x, g + plate.size[1] + g))
+        x += max(plate.size[0], tab.size[0]) + g
+        h = max(h, g + plate.size[1] + g + tab.size[1] + g)
+    w = x
+    out = Path(os.path.expanduser(s.output_dir))
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{s.name}_kerf_test.svg"
+    write_svg(path, w, h, items)
+    notes = [
+        f"Kerf test: {len(vals)} plate + tab pairs in {s.tray_thickness:g} mm stock, "
+        f"kerf {vals[0]:.2f} to {vals[-1]:.2f} mm (joint play {s.joint_play:g} mm).",
+        f"Sheet is {w:.0f} x {h:.0f} mm. Push each tab piece into the plate above it. Use the kerf of the pair "
+        "that fits snugly by hand; if none do, adjust Kerf and cut the test again.",
+    ]
+    return path, [(path.stem, w, h, items)], notes
+
+
 def generate(s):
     """Write all SVGs plus a notes file. Returns (files, notes, sheets, pattern)."""
     sheets, pattern, needed, notes = build(s)
@@ -1266,6 +1331,18 @@ def run_gui():
 
     last_dir = {"path": None}
 
+    def kerf_test_clicked():
+        try:
+            path, sheets, notes = generate_kerf_test(read_settings())
+        except Exception as e:
+            messagebox.showerror("Kerf test", str(e))
+            return
+        state["sheets"], state["i"] = sheets, 0
+        show_picture.set(False)
+        draw()
+        log.set("\n".join(notes) + f"\n\nWrote {path}")
+        last_dir["path"] = path.parent
+
     def open_folder():
         p = last_dir["path"] or Path(os.path.expanduser(vars_["output_dir"].get()))
         if not Path(p).exists():
@@ -1288,6 +1365,7 @@ def run_gui():
     buttons.pack(fill="x", pady=(4, 0))
     ttk.Button(buttons, text="Preview", command=preview).pack(side="left")
     ttk.Button(buttons, text="Generate SVGs", command=generate_clicked).pack(side="left", padx=6)
+    ttk.Button(buttons, text="Kerf test", command=kerf_test_clicked).pack(side="left", padx=6)
     ttk.Button(buttons, text="Open folder", command=open_folder).pack(side="left")
 
     for v in vars_.values():
@@ -1317,7 +1395,15 @@ def run_cli(argv):
     ap.add_argument("--emoji", help="use a bundled emoji as the pattern: paste it or give its name; "
                                     "sets rows = cols unless --rows is given")
     ap.add_argument("--find-emoji", metavar="QUERY", help="list bundled emoji matching QUERY and exit")
+    ap.add_argument("--kerf-test", action="store_true",
+                    help="write only a kerf test sheet (slotted plates and tab pieces) and exit")
     args = ap.parse_args(argv)
+    if args.kerf_test:
+        s = Settings(**{f.name: getattr(args, f.name) for f in fields(Settings)})
+        path, _, notes = generate_kerf_test(s)
+        print("\n".join(notes))
+        print("wrote", path)
+        return
     if args.find_emoji is not None:
         for code in emoji_search(args.find_emoji, limit=40):
             print(f"{emoji_char(code)}  {code:<12} {emoji_index()[code]}")

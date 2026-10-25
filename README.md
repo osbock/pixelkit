@@ -23,6 +23,12 @@ compensation built in.
   legend of tile counts per color, including spares.
 - **Notes file:** dimensions, tile counts, paint counts per color and the
   settings used.
+- **Kerf test sheet** (the **Kerf test** button or `--kerf-test`): seven
+  pairs of pieces in tray stock, for kerf values from 0.15 mm below to
+  0.15 mm above the current setting, in 0.05 mm steps. Each pair is a plate
+  with two slots and a piece with two matching tabs, engraved with its kerf
+  value. The joint is the same as the box's base-to-wall joint and uses the
+  current finger width and joint play.
 
 All parts are packed onto sheets of your laser bed size. Spare tiles are trimmed
 when they alone would need another sheet, but the cut never drops below what
@@ -66,6 +72,7 @@ The GUI remembers your last settings in `~/.pixelkit.json`.
 python3 pixelkit.py --cli --cols 24 --rows 24 --image my-art.png
 python3 pixelkit.py --cli --emoji 🌻 --background "#1e8cdc" --sheet-width 304 --sheet-height 304
 python3 pixelkit.py --cli --find-emoji heart
+python3 pixelkit.py --cli --kerf-test --tray-thickness 3 --kerf 0.15
 python3 pixelkit.py --cli --help
 ```
 
@@ -110,8 +117,12 @@ Each tile takes the most common color in its area, so pixel art stays crisp.
 
 ## Tips
 
-- Cut a small test (for example 6 × 6 tiles) first to tune `kerf`,
-  `tile_clearance` and `joint_play` for your material.
+- Cut the kerf test first, in the stock you'll use for the tray. Push each
+  tab piece into the plate above it, then set **Kerf** to the value of the
+  pair that fits snugly by hand. If they're all too loose or too tight, set
+  Kerf to the best one and cut the test again.
+- Then cut a small kit (for example 6 × 6 tiles) to tune `tile_clearance`
+  for how the tiles fit in the tray.
 - Low walls with few corner segments become butt joints. The notes file says
   when that happens, so glue those corners.
 
