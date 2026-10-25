@@ -158,9 +158,8 @@ included unmodified in `emoji/twemoji-72.zip`, together with their license file.
 
 ## License
 
-pixelkit (the code and documentation in this folder) is © 2026 Kevin Osborn,
-released under the [MIT License](LICENSE). This license applies to this folder
-only; the rest of the 3DModels repository has its own license.
+pixelkit (the code and documentation) is © 2026 Kevin Osborn, released under
+the [MIT License](LICENSE).
 
 The bundled Twemoji graphics are not covered by the MIT License. They remain
 under CC BY 4.0, so anything you make or share with them must keep the credit
