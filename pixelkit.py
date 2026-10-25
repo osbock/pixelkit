@@ -10,6 +10,10 @@ A kit is:
     is given,
   * an optional printable pattern chart with a color legend.
 
+The pattern comes from any image file, or from the bundled Twemoji set
+(emoji/twemoji-72.zip, see fetch_emoji.py) via the GUI's Emoji… picker or
+`--emoji`.
+
 Kerf is compensated everywhere: tile pitch is pixel + kerf so each tile comes
 out at the nominal pixel size, and tray outlines are offset by kerf/2 away
 from the material so finger joints fit.
@@ -23,6 +27,7 @@ blue (#0000ff), hairline 0.1 mm strokes.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import os
@@ -63,7 +68,8 @@ class Settings:
     tile_border: float = 5.0       # waste frame around each tile block (0 = none)
     spare_percent: float = 5.0     # trimmed if spares alone would need another sheet
     tile_sheets: str = "combined"  # combined (cut, then paint) | per_color (colored stock)
-    image: str = ""
+    image: str = ""                # image file, or "emoji:<code> <name>" from the bundled set
+    background: str = "#ffffff"    # color behind transparent parts of the image
     colors: int = 8
     output_dir: str = "~/pixelkit_output"
     name: str = "pixelart"
@@ -530,12 +536,90 @@ def write_svg(path, w, h, items):
 MAX_GRID = 300  # tiles per side; beyond this the layout gets impractically slow
 
 
-def _rgb_image(path):
-    from PIL import Image
+# Bundled emoji (see fetch_emoji.py). An image setting of "emoji:<code> <name>",
+# e.g. "emoji:1f33b sunflower", reads the PNG straight from the zip.
+EMOJI_ZIP = Path(__file__).resolve().parent / "emoji" / "twemoji-72.zip"
+EMOJI_PREFIX = "emoji:"
+EMOJI_CREDIT = "Emoji graphics: Twemoji, CC BY 4.0 (Twitter, Inc and other contributors)"
+# Shown in the picker before anything is typed.
+EMOJI_STARTERS = ("1f600 1f60e 1f60d 1f4a9 1f47e 1f916 1f47b 1f383 2764 1f499 1f49a 1f49b 2b50 1f31f "
+                  "1f308 2600 1f319 2601 26a1 2744 1f525 1f30a 1f33b 1f337 1f339 1f335 1f332 1f344 "
+                  "1f34e 1f353 1f349 1f34c 1f352 1f951 1f355 1f354 1f369 1f36a 1f382 1f366 2615 1f431 "
+                  "1f436 1f98a 1f43b 1f43c 1f438 1f427 1f989 1f41d 1f98b 1f422 1f419 1f988 1f433 1f984 "
+                  "1f409 1f680 1f697 2708 26bd 1f3c0 1f3b8 1f3ae 1f381 1f388 1f451 1f48e 1f3e0").split()
 
-    im = Image.open(os.path.expanduser(path)).convert("RGBA")
-    white = Image.new("RGBA", im.size, (255, 255, 255, 255))
-    return Image.alpha_composite(white, im).convert("RGB")
+
+def is_emoji(image):
+    return image.startswith(EMOJI_PREFIX)
+
+
+def _emoji_zip():
+    if not EMOJI_ZIP.exists():
+        raise ValueError(f"Emoji set not found at {EMOJI_ZIP}; run fetch_emoji.py")
+    import zipfile
+    return zipfile.ZipFile(EMOJI_ZIP)
+
+
+_emoji_names = {}
+
+
+def emoji_index():
+    """{code: name} for every bundled emoji, e.g. {"1f33b": "sunflower"}."""
+    if not _emoji_names:
+        with _emoji_zip() as z:
+            _emoji_names.update(json.loads(z.read("index.json")))
+    return _emoji_names
+
+
+def emoji_png(code):
+    with _emoji_zip() as z:
+        return z.read(f"72x72/{code}.png")
+
+
+def emoji_char(code):
+    return "".join(chr(int(h, 16)) for h in code.split("-"))
+
+
+def emoji_search(query, limit=80):
+    """Codes matching `query`: pasted emoji characters, or words that must all
+    appear in the name (exact and prefix matches first)."""
+    index = emoji_index()
+    q = query.strip().lower()
+    if not q:
+        return [c for c in EMOJI_STARTERS if c in index][:limit]
+    if any(ord(ch) > 0x2000 for ch in q):
+        code = "-".join(f"{ord(ch):x}" for ch in q.replace(" ", ""))
+        for cand in (code, "-".join(p for p in code.split("-") if p != "fe0f")):
+            if cand in index:
+                return [cand]
+        return []
+    words = q.split()
+    hits = [c for c, name in index.items() if all(w in name for w in words)]
+
+    def rank(c):
+        name = index[c]
+        whole = all(w in name.replace("+", " ").split() for w in words)
+        return name != q, not whole, "skin tone" in name, not name.startswith(q), len(name), c
+
+    hits.sort(key=rank)
+    return hits[:limit]
+
+
+def emoji_image_value(code):
+    return f"{EMOJI_PREFIX}{code} {emoji_index().get(code, '')}".strip()
+
+
+def _rgb_image(path, background="#ffffff"):
+    import io
+    from PIL import Image, ImageColor
+
+    if is_emoji(path):
+        src = io.BytesIO(emoji_png(path[len(EMOJI_PREFIX):].split()[0]))
+    else:
+        src = os.path.expanduser(path)
+    im = Image.open(src).convert("RGBA")
+    bg = Image.new("RGBA", im.size, ImageColor.getrgb(background or "#ffffff") + (255,))
+    return Image.alpha_composite(bg, im).convert("RGB")
 
 
 def reduce_colors(pixels, max_colors, merge_dist=24.0):
@@ -616,7 +700,7 @@ def detect_grid(path):
     return max(1, round(w / cell)), max(1, round(h / cell))
 
 
-def load_pattern(path, cols, rows, max_colors):
+def load_pattern(path, cols, rows, max_colors, background="#ffffff"):
     """Reduce an image to a cols x rows grid of palette indices, most common
     color first.
 
@@ -627,9 +711,9 @@ def load_pattern(path, cols, rows, max_colors):
     its area rather than an average, so pixel art stays crisp."""
     from PIL import Image
 
-    im = _rgb_image(path)
+    im = _rgb_image(path, background)
     w, h = im.size
-    note = f"Pattern: image {w} x {h} px"
+    note = f"Pattern: {path.split()[0] if is_emoji(path) else 'image'} {w} x {h} px"
     scale = min(cols / w, rows / h)
     nw, nh = w, h
     sub = 1  # samples per tile side used for the majority vote
@@ -682,7 +766,7 @@ def write_pattern_svg(path, s, pattern, needed):
     cell = min(8.0, 180.0 / cols, 230.0 / rows)
     m = 12.0
     gw, gh = cols * cell, rows * cell
-    legend_h = 8 + 7 * len(pattern["palette"])
+    legend_h = 8 + 7 * len(pattern["palette"]) + (8 if is_emoji(s.image) else 0)
     w, h = max(gw + 2 * m, 120), gh + 2 * m + legend_h
     fs = cell * 0.45
     out = [
@@ -721,6 +805,8 @@ def write_pattern_svg(path, s, pattern, needed):
         out.append(f'<rect x="{m}" y="{y - 4.5:.1f}" width="5" height="5" fill="{hexcolor(rgb)}" stroke="#333" stroke-width="0.2"/>')
         out.append(f'<text x="{m + 7}" y="{y - 0.5:.1f}" font-size="3.5">{idx + 1}   {hexcolor(rgb)}   '
                    f'{pattern["counts"][idx]}   {needed[idx]}</text>')
+    if is_emoji(s.image):
+        out.append(f'<text x="{m}" y="{y + 8:.1f}" font-size="2.8" fill="#555">{EMOJI_CREDIT}</text>')
     out.append("</svg>")
     Path(path).write_text("\n".join(out) + "\n")
 
@@ -745,6 +831,13 @@ def validate(s):
             problems.append(f"{key} must be one of {options}.")
     if s.tray_style == "box" and s.finger_width < 2 * s.kerf + 1:
         problems.append("Finger width is too small.")
+    try:
+        from PIL import ImageColor
+        ImageColor.getrgb(s.background or "#ffffff")
+    except ValueError:
+        problems.append(f"Background {s.background!r} is not a color (use e.g. #1e8cdc).")
+    except ImportError:
+        pass
     if s.engrave_numbers and not s.image:
         problems.append("Engraving color numbers needs a pattern image.")
     return problems
@@ -756,8 +849,10 @@ def build(s):
     problems = validate(s)
     if problems:
         raise ValueError("\n".join(problems))
-    pattern = load_pattern(s.image, s.cols, s.rows, s.colors) if s.image else None
+    pattern = load_pattern(s.image, s.cols, s.rows, s.colors, s.background) if s.image else None
     notes = [pattern["note"]] if pattern else []
+    if is_emoji(s.image):
+        notes.append(EMOJI_CREDIT)
     sheets = []
 
     if s.tray_style != "none":
@@ -864,7 +959,7 @@ FORM = [
     ("Sheets", [("sheet_width", "Sheet width (mm)"), ("sheet_height", "Sheet height (mm)"),
                 ("spacing", "Part spacing (mm)"), ("tile_border", "Tile sheet border (mm)"),
                 ("spare_percent", "Spare tiles (%)"), ("tile_sheets", "Tile sheets")]),
-    ("Pattern (optional)", [("image", "Image"), ("colors", "Max colors")]),
+    ("Pattern (optional)", [("image", "Image"), ("background", "Background"), ("colors", "Max colors")]),
     ("Output", [("output_dir", "Folder"), ("name", "Name prefix")]),
 ]
 
@@ -883,7 +978,7 @@ def load_saved():
 
 def run_gui():
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    from tkinter import colorchooser, filedialog, messagebox, ttk
 
     root = tk.Tk()
     root.title("Pixel Art Kit Generator")
@@ -936,6 +1031,95 @@ def run_gui():
         vars_["rows"].set(str(rows))
         log.set(msg)
 
+    def pick_background():
+        try:
+            rgb, hx = colorchooser.askcolor(color=vars_["background"].get() or "#ffffff", parent=root)
+        except tk.TclError:
+            rgb, hx = colorchooser.askcolor(parent=root)
+        if hx:
+            vars_["background"].set(hx)
+
+    def pick_emoji():
+        """Searchable grid of the bundled emoji; Use puts the choice in Image."""
+        try:
+            emoji_index()
+        except ValueError as e:
+            messagebox.showerror("Emoji", str(e))
+            return
+        win = tk.Toplevel(root)
+        win.title("Choose emoji")
+        win.transient(root)
+        query = tk.StringVar()
+        top = ttk.Frame(win, padding=8)
+        top.pack(fill="x")
+        ttk.Label(top, text="Search").pack(side="left")
+        entry = ttk.Entry(top, textvariable=query, width=28)
+        entry.pack(side="left", padx=6)
+        ttk.Label(top, text="a name, or paste an emoji", foreground="#777").pack(side="left")
+        grid = tk.Frame(win, width=440, height=340, padx=8)
+        grid.pack(fill="both", expand=True)
+        grid.grid_propagate(False)
+        bottom = ttk.Frame(win, padding=8)
+        bottom.pack(fill="x")
+        status = tk.StringVar()
+        ttk.Label(bottom, textvariable=status).pack(side="left")
+        chosen = {"code": None, "after": None}
+        images = {}  # PhotoImages must stay referenced while shown
+        cells = {}
+        normal = grid.cget("background")
+
+        def thumb(code):
+            if code not in images:
+                images[code] = tk.PhotoImage(data=base64.b64encode(emoji_png(code)).decode()).subsample(2)
+            return images[code]
+
+        def select(code):
+            chosen["code"] = code
+            for c, cell in cells.items():
+                cell.configure(background="#9cc3f5" if c == code else normal)
+            status.set(f"{emoji_index().get(code) or '(no name)'}   U+{code.upper().replace('-', ' U+')}")
+
+        def use(code=None):
+            code = code or chosen["code"]
+            if not code:
+                return
+            vars_["image"].set(emoji_image_value(code))
+            vars_["rows"].set(vars_["cols"].get())
+            log.set(f"Emoji: {emoji_index().get(code, code)}, grid set to "
+                    f"{vars_['cols'].get()} x {vars_['cols'].get()}.\n{EMOJI_CREDIT}")
+            win.destroy()
+
+        def refresh():
+            for cell in cells.values():
+                cell.destroy()
+            cells.clear()
+            codes = emoji_search(query.get())
+            for n, code in enumerate(codes):
+                cell = tk.Label(grid, image=thumb(code), borderwidth=2, background=normal)
+                cell.bind("<Button-1>", lambda e, c=code: select(c))
+                cell.bind("<Double-Button-1>", lambda e, c=code: use(c))
+                cell.grid(row=n // 10, column=n % 10, padx=1, pady=1)
+                cells[code] = cell
+            if len(codes) == 1:
+                select(codes[0])
+            elif not codes:
+                status.set("No matches")
+            else:
+                more = "  (refine the search to see more)" if len(codes) == 80 else ""
+                status.set(f"{len(codes)} shown, double-click to use{more}")
+
+        def typed(*_):
+            if chosen["after"]:
+                win.after_cancel(chosen["after"])
+            chosen["after"] = win.after(200, refresh)
+
+        query.trace_add("write", typed)
+        entry.bind("<Return>", lambda e: use())
+        ttk.Button(bottom, text="Use", command=use).pack(side="right")
+        ttk.Button(bottom, text="Cancel", command=win.destroy).pack(side="right", padx=6)
+        refresh()
+        entry.focus_set()
+
     def browse_dir():
         p = filedialog.askdirectory()
         if p:
@@ -963,10 +1147,13 @@ def run_gui():
                         ttk.Entry(box, textvariable=var, width=width).grid(row=r, column=1, sticky="w")
                     if key == "image":
                         ttk.Button(box, text="…", width=2, command=browse_image).grid(row=r, column=2)
+                        ttk.Button(box, text="Emoji…", command=pick_emoji).grid(row=r, column=3)
                         ttk.Button(box, text="Set grid from image", command=grid_from_image).grid(
                             row=r + 10, column=0, columnspan=3, sticky="w", pady=(4, 0))
                     elif key == "output_dir":
                         ttk.Button(box, text="…", width=2, command=browse_dir).grid(row=r, column=2)
+                    elif key == "background":
+                        ttk.Button(box, text="…", width=2, command=pick_background).grid(row=r, column=2)
                 vars_[key] = var
 
     info = tk.StringVar()
@@ -1110,7 +1297,21 @@ def run_cli(argv):
             ap.add_argument(flag, choices=CHOICES[f.name], default=val)
         else:
             ap.add_argument(flag, type=type(val), default=val)
+    ap.add_argument("--emoji", help="use a bundled emoji as the pattern: paste it or give its name; "
+                                    "sets rows = cols unless --rows is given")
+    ap.add_argument("--find-emoji", metavar="QUERY", help="list bundled emoji matching QUERY and exit")
     args = ap.parse_args(argv)
+    if args.find_emoji is not None:
+        for code in emoji_search(args.find_emoji, limit=40):
+            print(f"{emoji_char(code)}  {code:<12} {emoji_index()[code]}")
+        return
+    if args.emoji:
+        hits = emoji_search(args.emoji, limit=1)
+        if not hits:
+            sys.exit(f"error: no bundled emoji matches {args.emoji!r} (try --find-emoji)")
+        args.image = emoji_image_value(hits[0])
+        if not any(a == "--rows" or a.startswith("--rows=") for a in argv):
+            args.rows = args.cols
     s = Settings(**{f.name: getattr(args, f.name) for f in fields(Settings)})
     try:
         files, notes, _, _ = generate(s)
