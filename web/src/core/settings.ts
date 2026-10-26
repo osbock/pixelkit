@@ -23,6 +23,8 @@ export interface Settings {
   sheet_height: number;
   spacing: number;          // gap between parts and from sheet edge
   tile_border: number;      // waste frame around each tile block (0 = none)
+  tile_tabs: boolean;       // leave bridges on the vertical tile cuts
+  tab_width: number;        // width of each uncut bridge, mm
   spare_percent: number;    // trimmed if spares alone would need another sheet
   tile_sheets: (typeof TILE_SHEETS)[number];
   image: string;            // image file name, or "emoji:<code> <name>" from the bundled set
@@ -50,6 +52,8 @@ export const DEFAULTS: Settings = {
   sheet_height: 400,
   spacing: 3,
   tile_border: 5,
+  tile_tabs: false,
+  tab_width: 0.5,
   spare_percent: 5,
   tile_sheets: "combined",
   image: "",
@@ -96,6 +100,9 @@ export function validate(s: Settings): string[] {
   if (s.kerf < 0 || s.kerf >= s.pixel) problems.push("Kerf must be between 0 and the pixel size.");
   if (!TRAY_STYLES.includes(s.tray_style)) problems.push(`tray_style must be one of ${TRAY_STYLES.join(", ")}.`);
   if (!TILE_SHEETS.includes(s.tile_sheets)) problems.push(`tile_sheets must be one of ${TILE_SHEETS.join(", ")}.`);
+  if (s.tile_tabs && !(s.tab_width > 0 && s.tab_width < s.pixel / 2)) {
+    problems.push("Tab width must be more than 0 and less than half the pixel size.");
+  }
   if (s.tray_style === "box" && s.finger_width < 2 * s.kerf + 1) problems.push("Finger width is too small.");
   if (!parseColor(s.background)) problems.push(`Background '${s.background}' is not a color (use e.g. #1e8cdc).`);
   if (s.engrave_numbers && !s.image) problems.push("Engraving color numbers needs a pattern image.");

@@ -65,6 +65,11 @@ export function build(s: Settings, picture: RGBAImage | null, pattern: Pattern |
     notes.push(`Tiles ${label || "all"}: ${count} in picture, ${cut} cut (${spare}) ` +
       `on ${packed.length} sheet(s) of ${g(s.tile_thickness)} mm stock`);
   }
+  if (s.tile_tabs) {
+    notes.push(`Tile tabs: 2 per tile, ${g(s.tab_width)} mm wide, on the vertical cuts; rows come apart ` +
+      (s.tile_border > 0 ? "and stay attached to the side frame."
+        : "(no tile border, so row ends are held only by the surrounding stock)."));
+  }
   if (pattern && groups.length === 1) {
     needed = shareSpares(pattern.counts, needed[0]);
     notes.push("Color the tiles after cutting: " +

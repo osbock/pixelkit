@@ -41,6 +41,8 @@ const CASES: [string, Partial<Settings>][] = [
   ["corner fingers + play", { lip: 12, finger_width: 5, kerf: 0.25, joint_play: 0.2, cols: 8, rows: 6 }],
   ["no tray, no border", { tray_style: "none", tile_border: 0, spare_percent: 50, cols: 30, rows: 30 }],
   ["oversize base", { cols: 40, rows: 50, pixel: 6, sheet_width: 304, sheet_height: 304 }],
+  ["tile tabs", { tile_tabs: true, cols: 7, rows: 5 }],
+  ["tile tabs, wide, no border", { tile_tabs: true, tab_width: 1.2, tile_border: 0, kerf: 0.2, tray_style: "none" }],
 ];
 
 describe.skipIf(!hasPython())("parity with pixelkit.py", () => {

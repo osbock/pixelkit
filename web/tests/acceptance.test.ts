@@ -128,3 +128,30 @@ describe("emoji kits", () => {
     expect(files.map((f) => f.name)).toContain("sunflower_scaled.png");
   });
 });
+
+describe("tile tabs", () => {
+  it("leave a tab_width bridge at mid-height of every tile on each vertical cut", () => {
+    const s = S({ tile_tabs: true, cols: 3, rows: 2, tray_style: "none", spare_percent: 0 });
+    const b = build(s, null);
+    const block = b.sheets[0].items[0].normalized();
+    const p = s.pixel + s.kerf, bd = s.tile_border;
+    const verticals = block.cuts.filter((c) => !c.closed && c.pts[0][0] === c.pts[1][0]);
+    const horizontals = block.cuts.filter((c) => !c.closed && c.pts[0][1] === c.pts[1][1]);
+    // 3 x 2 tiles: 4 vertical lines (including both edges) x 3 segments each.
+    expect(verticals.length).toBe(4 * 3);
+    // 1 interior + top + bottom horizontal cut, each unbroken across the block.
+    expect(horizontals.length).toBe(3);
+    for (const hc of horizontals) expect(Math.abs(hc.pts[0][0] - hc.pts[1][0])).toBeCloseTo(3 * p);
+    // Gaps in the path are tab_width + kerf, centred on each tile.
+    const x = bd; // left edge line
+    const ys = verticals.filter((c) => c.pts[0][0] === x).flatMap((c) => c.pts.map((pt) => pt[1])).sort((a, b) => a - b);
+    expect(ys[2] - ys[1]).toBeCloseTo(0.5 + 0.15);
+    expect((ys[1] + ys[2]) / 2).toBeCloseTo(bd + 0.5 * p);
+    expect(b.notes).toContain("Tile tabs: 2 per tile, 0.5 mm wide, on the vertical cuts; rows come apart and stay attached to the side frame.");
+  });
+
+  it("rejects tabs wider than half a tile", () => {
+    expect(validate(S({ tile_tabs: true, tab_width: 6 }))).toContain(
+      "Tab width must be more than 0 and less than half the pixel size.");
+  });
+});

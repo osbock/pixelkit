@@ -66,6 +66,8 @@ class Settings:
     sheet_height: float = 400.0
     spacing: float = 3.0           # gap between parts and from sheet edge
     tile_border: float = 5.0       # waste frame around each tile block (0 = none)
+    tile_tabs: bool = False        # leave bridges on the vertical tile cuts
+    tab_width: float = 0.5         # width of each uncut bridge, mm
     spare_percent: float = 5.0     # trimmed if spares alone would need another sheet
     tile_sheets: str = "combined"  # combined (cut, then paint) | per_color (colored stock)
     image: str = ""                # image file, or "emoji:<code> <name>" from the bundled set
@@ -386,7 +388,14 @@ def make_kerf_test(s):
 
 
 def tile_block(name, c, r, s, label=""):
-    """c x r tiles on a shared cut grid, optionally inside a waste border."""
+    """c x r tiles on a shared cut grid, optionally inside a waste border.
+
+    With tile_tabs, every vertical cut (including the tile area's left and
+    right edges) stops short around the middle of each tile, leaving a
+    tab_width bridge: each tile hangs on its left and right neighbours, rows
+    come apart along the horizontal cuts, and row ends hold on to the side
+    frame. The gap in the path is tab_width + kerf, because the beam reaches
+    kerf/2 past each end of a cut."""
     p = s.pixel + s.kerf
     bd = s.tile_border
     w, h = c * p, r * p
@@ -394,15 +403,34 @@ def tile_block(name, c, r, s, label=""):
     if label and bd >= 3:
         size = bd * 0.6
         piece.texts.append((bd, bd * 0.8, size, label, 0.0, "start"))
-    for i in range(1, c):
+
+    def vertical(i):
         x = bd + i * p
-        pts = [(x, bd), (x, bd + h)]
-        piece.cuts.append((pts if i % 2 else pts[::-1], False))
+        if not s.tile_tabs:
+            pts = [(x, bd), (x, bd + h)]
+            return [pts if i % 2 else pts[::-1]]
+        half = (s.tab_width + s.kerf) / 2
+        segs, y = [], bd
+        for j in range(r):
+            mid = bd + (j + 0.5) * p
+            segs.append([(x, y), (x, mid - half)])
+            y = mid + half
+        segs.append([(x, y), (x, bd + h)])
+        return segs if i % 2 else [seg[::-1] for seg in reversed(segs)]
+
+    for i in range(1, c):
+        piece.cuts += [(seg, False) for seg in vertical(i)]
     for j in range(1, r):
         y = bd + j * p
         pts = [(bd, y), (bd + w, y)]
         piece.cuts.append((pts if j % 2 else pts[::-1], False))
-    piece.cuts.append((rect_pts(bd, bd, bd + w, bd + h), True))
+    if s.tile_tabs:
+        piece.cuts.append(([(bd, bd), (bd + w, bd)], False))
+        piece.cuts += [(seg, False) for seg in vertical(c)]
+        piece.cuts.append(([(bd + w, bd + h), (bd, bd + h)], False))
+        piece.cuts += [(seg, False) for seg in vertical(0)]
+    else:
+        piece.cuts.append((rect_pts(bd, bd, bd + w, bd + h), True))
     if bd > 0:
         piece.cuts.append((rect_pts(0, 0, w + 2 * bd, h + 2 * bd), True))
     return piece
@@ -866,6 +894,8 @@ def validate(s):
     for key, options in CHOICES.items():
         if getattr(s, key) not in options:
             problems.append(f"{key} must be one of {options}.")
+    if s.tile_tabs and not 0 < s.tab_width < s.pixel / 2:
+        problems.append("Tab width must be more than 0 and less than half the pixel size.")
     if s.tray_style == "box" and s.finger_width < 2 * s.kerf + 1:
         problems.append("Finger width is too small.")
     try:
@@ -921,6 +951,10 @@ def build(s):
             spare += f", trimmed from {s.spare_percent:g}% to stay on {len(packed)} sheet(s)"
         notes.append(f"Tiles {label or 'all'}: {count} in picture, {cut} cut ({spare}) "
                      f"on {len(packed)} sheet(s) of {s.tile_thickness:g} mm stock")
+    if s.tile_tabs:
+        notes.append(f"Tile tabs: 2 per tile, {s.tab_width:g} mm wide, on the vertical cuts; rows come apart "
+                     + ("and stay attached to the side frame." if s.tile_border > 0
+                        else "(no tile border, so row ends are held only by the surrounding stock)."))
     if pattern and len(groups) == 1:
         needed = share_spares(pattern["counts"], needed[0])
         notes.append("Color the tiles after cutting: " + ", ".join(
@@ -1055,7 +1089,8 @@ FORM = [
               ("engrave_grid", "Engrave grid on base"), ("engrave_numbers", "Engrave color numbers")]),
     ("Sheets", [("sheet_width", "Sheet width (mm)"), ("sheet_height", "Sheet height (mm)"),
                 ("spacing", "Part spacing (mm)"), ("tile_border", "Tile sheet border (mm)"),
-                ("spare_percent", "Spare tiles (%)"), ("tile_sheets", "Tile sheets")]),
+                ("spare_percent", "Spare tiles (%)"), ("tile_sheets", "Tile sheets"),
+                ("tile_tabs", "Tabs between tiles"), ("tab_width", "Tab width (mm)")]),
     ("Pattern (optional)", [("image", "Image"), ("background", "Background"), ("colors", "Max colors")]),
     ("Output", [("output_dir", "Folder"), ("name", "Name prefix")]),
 ]

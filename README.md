@@ -140,6 +140,8 @@ All lengths are in mm.
 | `sheet_width`, `sheet_height` | 600, 400 | Laser bed or stock size |
 | `spacing` | 3 | Gap between parts and from the sheet edges |
 | `tile_border` | 5 | Waste frame around each tile block (0 = none) |
+| `tile_tabs` | off | Leave small uncut bridges on the vertical tile cuts, so tiles stay in the sheet until you snap them out |
+| `tab_width` | 0.5 | Width of each bridge |
 | `spare_percent` | 5 | Extra tiles, trimmed if they would need another sheet |
 | `tile_sheets` | combined | `combined` (cut, then paint) or `per_color` (colored stock) |
 | `image` | | Image file, or `emoji:<code>` from the picker |
@@ -169,6 +171,11 @@ Each tile takes the most common color in its area, so pixel art stays crisp.
   folder and choose it as the image, keeping the same grid size. It is then
   used exactly as drawn. The exceptions are colors closer than about 24 RGB
   steps, which are merged, and a color count over Max colors.
+- Turn on **Tabs between tiles** if cut tiles fall through your laser bed or
+  get blown around. Each tile keeps a 0.5 mm bridge to its left and right
+  neighbours, at mid-height. The horizontal cuts are left whole, so each row
+  comes away as a strip, and the ends of each row hold on to the side frame.
+  Snap the tiles apart by hand and sand the nubs if needed.
 - Then cut a small kit (for example 6 × 6 tiles) to tune `tile_clearance`
   for how the tiles fit in the tray.
 - Low walls with few corner segments become butt joints. The notes file says

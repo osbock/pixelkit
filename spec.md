@@ -95,6 +95,8 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `sheet_width`, `sheet_height` | float | 600, 400 | Bed or stock size |
 | `spacing` | float | 3.0 | Gap between parts, and from the sheet edges |
 | `tile_border` | float | 5.0 | Waste frame around each tile block (0 = none) |
+| `tile_tabs` | bool | false | Leave uncut bridges on the vertical tile cuts (§5.7) |
+| `tab_width` | float | 0.5 | Width of each bridge |
 | `spare_percent` | float | 5.0 | Extra tiles (may be trimmed, see §6.3) |
 | `tile_sheets` | choice | `combined` | `combined` (cut, then paint) or `per_color` (colored stock) |
 | `image` | str | "" | Image path, or `emoji:<code> <name>` (§9) |
@@ -114,6 +116,7 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
   set a 1856 × 2304 grid from an image's pixel size and the layout hung.
 - `pixel`, both thicknesses and both sheet dimensions must be greater than 0.
 - `kerf` must satisfy 0 ≤ kerf < pixel.
+- With `tile_tabs`, `tab_width` must satisfy 0 < tab_width < pixel/2.
 - Choice fields must hold a listed value.
 - In `box` style, `finger_width` must be at least 2·kerf + 1.
 - `background` must parse as a color (any Pillow `ImageColor` string). Skip
@@ -259,6 +262,21 @@ rim height relative to the tiles: t·N − tile_thickness.
 
   Tiles aren't drawn as individual squares, which avoids double-cutting the
   shared edges.
+- **Tabs (`tile_tabs`):** every vertical line, including the tile area's left
+  and right edges, is cut as separate segments. Each line leaves a gap of
+  `tab_width + kerf`, centred at each tile's mid-height (bd + (j + ½)·p). The
+  beam reaches kerf/2 past each end of a cut, so the uncut bridge comes out at
+  `tab_width`.
+  - **Result:** every tile has two bridges, one to the left and one to the
+    right. The horizontal cuts stay unbroken, so rows come apart from each
+    other, and each row's ends hold on to the side frame (or, with no border,
+    to the surrounding stock).
+  - **Segment order and direction:** a line's segments run top to bottom on
+    odd lines and bottom to top on even lines (serpentine).
+  - **Outer boundary order:** with tabs, the closed outer rectangle becomes
+    open lines in this order: top edge (left to right), right edge, bottom edge
+    (right to left), left edge.
+  - **Notes** report the tabs and say whether rows are held by the frame.
 - **Label:** when the block has a label (per-color mode) and a border of at
   least 3 mm, engrave the label (e.g. `C2 #f5be28`) in the top border.
   Its size is 0.6·border and it is left-anchored at (border, 0.8·border).

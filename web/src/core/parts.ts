@@ -153,7 +153,14 @@ export function makeKerfTest(s: Settings): Piece[] {
   return pieces;
 }
 
-/** c x r tiles on a shared cut grid, optionally inside a waste border. */
+/** c x r tiles on a shared cut grid, optionally inside a waste border.
+ *
+ * With tile_tabs, every vertical cut (including the tile area's left and
+ * right edges) stops short around the middle of each tile, leaving a
+ * tab_width bridge: each tile hangs on its left and right neighbours, rows
+ * come apart along the horizontal cuts, and row ends hold on to the side
+ * frame. The gap in the path is tab_width + kerf, because the beam reaches
+ * kerf/2 past each end of a cut. */
 export function tileBlock(name: string, c: number, r: number, s: Settings, label = ""): Piece {
   const p = s.pixel + s.kerf;
   const bd = s.tile_border;
@@ -162,17 +169,40 @@ export function tileBlock(name: string, c: number, r: number, s: Settings, label
   if (label && bd >= 3) {
     piece.texts.push({ x: bd, y: bd * 0.8, size: bd * 0.6, text: label, angle: 0, anchor: "start" });
   }
-  for (let i = 1; i < c; i++) {
+  type Seg = [number, number][];
+  const vertical = (i: number): Seg[] => {
     const x = bd + i * p;
-    const pts: [number, number][] = [[x, bd], [x, bd + h]];
-    piece.cuts.push({ pts: i % 2 ? pts : pts.reverse(), closed: false });
-  }
+    if (!s.tile_tabs) {
+      const pts: Seg = [[x, bd], [x, bd + h]];
+      return [i % 2 ? pts : pts.reverse()];
+    }
+    const half = (s.tab_width + s.kerf) / 2;
+    const segs: Seg[] = [];
+    let y = bd;
+    for (let j = 0; j < r; j++) {
+      const mid = bd + (j + 0.5) * p;
+      segs.push([[x, y], [x, mid - half]]);
+      y = mid + half;
+    }
+    segs.push([[x, y], [x, bd + h]]);
+    return i % 2 ? segs : segs.reverse().map((seg) => seg.reverse());
+  };
+  const open = (pts: Seg) => ({ pts, closed: false });
+
+  for (let i = 1; i < c; i++) piece.cuts.push(...vertical(i).map(open));
   for (let j = 1; j < r; j++) {
     const y = bd + j * p;
-    const pts: [number, number][] = [[bd, y], [bd + w, y]];
-    piece.cuts.push({ pts: j % 2 ? pts : pts.reverse(), closed: false });
+    const pts: Seg = [[bd, y], [bd + w, y]];
+    piece.cuts.push(open(j % 2 ? pts : pts.reverse()));
   }
-  piece.cuts.push({ pts: rectPts(bd, bd, bd + w, bd + h), closed: true });
+  if (s.tile_tabs) {
+    piece.cuts.push(open([[bd, bd], [bd + w, bd]]));
+    piece.cuts.push(...vertical(c).map(open));
+    piece.cuts.push(open([[bd + w, bd + h], [bd, bd + h]]));
+    piece.cuts.push(...vertical(0).map(open));
+  } else {
+    piece.cuts.push({ pts: rectPts(bd, bd, bd + w, bd + h), closed: true });
+  }
   if (bd > 0) piece.cuts.push({ pts: rectPts(0, 0, w + 2 * bd, h + 2 * bd), closed: true });
   return piece;
 }

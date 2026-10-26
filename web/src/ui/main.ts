@@ -23,7 +23,8 @@ const FORM: [string, FieldSpec[]][] = [
     ["engrave_grid", "Engrave grid on base"], ["engrave_numbers", "Engrave color numbers"]]],
   ["Sheets", [["sheet_width", "Sheet width (mm)", { step: 1 }], ["sheet_height", "Sheet height (mm)", { step: 1 }],
     ["spacing", "Part spacing (mm)", { step: 0.5 }], ["tile_border", "Tile sheet border (mm)", { step: 0.5, min: 0 }],
-    ["spare_percent", "Spare tiles (%)", { step: 1, min: 0 }], ["tile_sheets", "Tile sheets", { choices: TILE_SHEETS }]]],
+    ["spare_percent", "Spare tiles (%)", { step: 1, min: 0 }], ["tile_sheets", "Tile sheets", { choices: TILE_SHEETS }],
+    ["tile_tabs", "Tabs between tiles"], ["tab_width", "Tab width (mm)", { step: 0.1, min: 0 }]]],
   ["Pattern (optional)", [["image", "Image"], ["background", "Background"], ["colors", "Max colors", { step: 1, min: 1 }]]],
   ["Output", [["name", "Name prefix"]]],
 ];
