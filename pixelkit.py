@@ -353,6 +353,7 @@ def make_layered(s, pattern):
 
 KERF_TEST_STEP = 0.05
 KERF_TEST_COUNT = 7
+KERF_TEST_ROOM = 0.3  # extra slot room across the stock thickness
 
 
 def kerf_test_values(s):
@@ -366,7 +367,11 @@ def make_kerf_test(s):
     """Pairs of test pieces in tray stock, one pair per kerf value: a plate
     with two slots, and a tab piece whose two tabs push into them, exactly as
     the box base and walls fit. Each piece is engraved with its kerf value;
-    the pair that goes together snugly gives the kerf to use."""
+    the pair that goes together snugly gives the kerf to use.
+
+    Slots get KERF_TEST_ROOM extra across the stock thickness: box fingers
+    enter from an open edge, so only the finger-width fit matters, and a
+    thickness setting that is slightly off mustn't skew the test."""
     t, f = s.tray_thickness, s.finger_width
     q = s.joint_play / 4  # same play per side as the box joints
     margin = 4.0
@@ -378,7 +383,7 @@ def make_kerf_test(s):
     pieces = []
     for k in kerf_test_values(s):
         label = f"{k:.2f}"
-        slots = [(a - q, margin - q, b + q, margin + t + q) for a, b in xs]
+        slots = [(a - q, margin - q, b + q, margin + t + KERF_TEST_ROOM + q) for a, b in xs]
         plate = outline_piece(f"kerf_{label}_plate", [(0, 0, w, plate_h)], slots, k)
         plate.texts.append((w / 2, plate_h - 2.5, size, label, 0.0, "middle"))
         tabs = [(a + q, tab_h, b - q, tab_h + t) for a, b in xs]
@@ -1014,7 +1019,8 @@ def generate_kerf_test(s):
     write_svg(path, w, h, items)
     notes = [
         f"Kerf test: {len(vals)} plate + tab pairs in {s.tray_thickness:g} mm stock, "
-        f"kerf {vals[0]:.2f} to {vals[-1]:.2f} mm (joint play {s.joint_play:g} mm).",
+        f"kerf {vals[0]:.2f} to {vals[-1]:.2f} mm (joint play {s.joint_play:g} mm). Slots have "
+        f"{KERF_TEST_ROOM:g} mm extra room across the stock, so only the finger-width fit is tested.",
         f"Sheet is {w:.0f} x {h:.0f} mm. Push each tab piece into the plate above it. Use the kerf of the pair "
         "that fits snugly by hand as the tray kerf; if none do, adjust Tray kerf and cut the test again.",
     ]

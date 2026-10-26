@@ -5,7 +5,7 @@ import { EMOJI_CREDIT, emojiCode, isEmoji } from "./emoji";
 import type { Piece } from "./geometry";
 import { pack } from "./pack";
 import {
-  kerfTestValues, layerCount, makeBox, makeKerfTest, makeLayered, shareSpares, tileBlocks, tilesToCut, trayInner,
+  KERF_TEST_ROOM, kerfTestValues, layerCount, makeBox, makeKerfTest, makeLayered, shareSpares, tileBlocks, tilesToCut, trayInner,
   wantedTiles,
 } from "./parts";
 import { composite, loadPattern, type Pattern, type RGBAImage, scaledImage } from "./pattern";
@@ -161,7 +161,8 @@ export function kerfTest(s: Settings): { file: OutFile; sheet: SheetOut; notes: 
   const stem = `${s.name}_kerf_test`;
   const notes = [
     `Kerf test: ${vals.length} plate + tab pairs in ${g(s.tray_thickness)} mm stock, ` +
-      `kerf ${fixed(vals[0], 2)} to ${fixed(vals[vals.length - 1], 2)} mm (joint play ${g(s.joint_play)} mm).`,
+      `kerf ${fixed(vals[0], 2)} to ${fixed(vals[vals.length - 1], 2)} mm (joint play ${g(s.joint_play)} mm). Slots have ` +
+      `${g(KERF_TEST_ROOM)} mm extra room across the stock, so only the finger-width fit is tested.`,
     `Sheet is ${fixed(w, 0)} x ${fixed(h, 0)} mm. Push each tab piece into the plate above it. Use the kerf of the pair ` +
       "that fits snugly by hand as the tray kerf; if none do, adjust Tray kerf and cut the test again.",
   ];

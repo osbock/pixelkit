@@ -72,7 +72,9 @@ Every push to `main` runs the tests and publishes the site to GitHub Pages
   0.15 mm above the current setting, in 0.05 mm steps. Each pair is a plate
   with two slots and a piece with two matching tabs, engraved with its kerf
   value. The joint is the same as the box's base-to-wall joint and uses the
-  current finger width and joint play.
+  current finger width and joint play. The slots have 0.3 mm extra room
+  across the stock thickness, so the test checks only the finger-width fit
+  and isn't thrown off if the thickness setting is slightly wrong.
 
 All parts are packed onto sheets of your laser bed size. Spare tiles are trimmed
 when they alone would need another sheet, but the cut never drops below what
@@ -174,6 +176,10 @@ Each tile takes the most common color in its area, so pixel art stays crisp.
   opening. Lowering the tile kerf keeps the gaps between tiles even, and the
   play adds up along a row: at 0.05 mm smaller per tile, a 20-tile row gets
   1 mm of play on top of the clearance.
+- To check the thickness setting, look at a cut box corner. Fingers that
+  stick out proud mean the setting is thicker than the stock; recessed
+  fingers mean it's thinner. Soft plywood often measures thicker with
+  calipers than it behaves in a joint.
 - To find your real kerf, measure a cut tile with calipers:
   real kerf = pixel + tile kerf − measured tile size. Measure the stock too
   and enter its real thickness. A tray kerf that fits best above your real

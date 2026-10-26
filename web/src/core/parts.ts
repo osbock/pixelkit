@@ -119,6 +119,7 @@ export function makeLayered(s: Settings, pattern: Pattern | null): [Piece[], Tra
 
 export const KERF_TEST_STEP = 0.05;
 export const KERF_TEST_COUNT = 7;
+export const KERF_TEST_ROOM = 0.3; // extra slot room across the stock thickness
 
 /** Kerf values to try, centred on the current setting. */
 export function kerfTestValues(s: Settings): number[] {
@@ -129,7 +130,11 @@ export function kerfTestValues(s: Settings): number[] {
 
 /** Pairs of test pieces in tray stock, one pair per kerf value: a plate with
  * two slots, and a tab piece whose two tabs push into them, exactly as the
- * box base and walls fit. Each piece is engraved with its kerf value. */
+ * box base and walls fit. Each piece is engraved with its kerf value.
+ *
+ * Slots get KERF_TEST_ROOM extra across the stock thickness: box fingers
+ * enter from an open edge, so only the finger-width fit matters, and a
+ * thickness setting that is slightly off mustn't skew the test. */
 export function makeKerfTest(s: Settings): Piece[] {
   const t = s.tray_thickness, f = s.finger_width;
   const q = s.joint_play / 4; // same play per side as the box joints
@@ -142,7 +147,7 @@ export function makeKerfTest(s: Settings): Piece[] {
   const pieces: Piece[] = [];
   for (const k of kerfTestValues(s)) {
     const label = fixed(k, 2);
-    const slots: Rect[] = xs.map(([a, b]) => [a - q, margin - q, b + q, margin + t + q]);
+    const slots: Rect[] = xs.map(([a, b]) => [a - q, margin - q, b + q, margin + t + KERF_TEST_ROOM + q]);
     const plate = outlinePiece(`kerf_${label}_plate`, [[0, 0, w, plateH]], slots, k);
     plate.texts.push({ x: w / 2, y: plateH - 2.5, size, text: label, angle: 0, anchor: "middle" });
     const tabs: Rect[] = xs.map(([a, b]) => [a + q, tabH, b - q, tabH + t]);

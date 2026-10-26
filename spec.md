@@ -376,6 +376,10 @@ width w = 2f + 3·margin:
   - Two slots, each f × t, at x = margin and x = w − margin − f, starting
     margin from the top.
   - Each slot is widened by q = joint_play/4 on all sides.
+  - Each slot gets **0.3 mm extra** across the stock thickness (f × (t + 0.3)).
+    **Why:** box fingers enter from an open edge, so only the finger-width fit
+    matters there. Without the extra room, a slightly wrong thickness setting
+    made every pair read tighter or looser than the box joints would.
   - The value is engraved below the slots (e.g. "0.15"), 3.5 mm high, centred.
 - **Tab piece:** a w × 10 body with two tabs f × t on one long edge, at the
   same x positions.
@@ -699,7 +703,8 @@ A reimplementation should pass these checks.
    long/short edge. Base fingers come out at seg + kerf and wall slots at
    seg − kerf in the cut geometry, so both are nominal after cutting.
 2. **Kerf test:** at kerf 0.15, finger 6 and thickness 3, the slot cut paths
-   are 5.85 × 2.85 mm and the tab cut paths are 6.15 mm wide.
+   are 5.85 × 3.15 mm (thickness plus 0.3 mm room, less the kerf) and the tab
+   cut paths are 6.15 mm wide.
 3. **Packing:** a 20 × 25 kit at 10 mm on a 304 × 304 mm sheet gives one tray
    sheet and one tile sheet (529 tiles, a 23 × 23 block).
 4. **Spare trimming:** 27 × 28 tiles at 10% spares on 304 mm gives 784 tiles

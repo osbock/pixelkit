@@ -33,13 +33,13 @@ describe("spec §14 acceptance", () => {
     expect(widths(front, (y) => Math.abs(y - (z - 3 + 0.075)) < 1e-6)).toEqual([Math.round((seg - 0.15) * 1000) / 1000]);
   });
 
-  it("2. kerf test 0.15: slots 5.85 x 2.85, tabs 6.15", () => {
+  it("2. kerf test 0.15: slots 5.85 x 3.15 (0.3 thickness room), tabs 6.15", () => {
     const pieces = makeKerfTest(S());
     const plate = pieces.find((p) => p.name === "kerf_0.15_plate")!;
     for (const hole of plate.cuts.slice(0, 2)) {
       const xs = hole.pts.map((p) => p[0]), ys = hole.pts.map((p) => p[1]);
       expect(+(Math.max(...xs) - Math.min(...xs)).toFixed(3)).toBe(5.85);
-      expect(+(Math.max(...ys) - Math.min(...ys)).toFixed(3)).toBe(2.85);
+      expect(+(Math.max(...ys) - Math.min(...ys)).toFixed(3)).toBe(3.15);
     }
     const tab = pieces.find((p) => p.name === "kerf_0.15_tab")!;
     expect(widths(tab.cuts[0].pts, (y) => y > 12)).toEqual([6.15]);
