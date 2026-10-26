@@ -41,6 +41,7 @@ desktop GUI. A command-line mode exists for scripting.
   conventionally `--cli ...`.
 - **The repository must work offline after cloning.** All emoji assets are
   bundled (§9).
+- A browser version with the same behavior lives in `web/` (§13).
 - License: MIT for pixelkit. The bundled Twemoji graphics remain CC BY 4.0
   and must be credited (§9.4).
 
@@ -601,7 +602,63 @@ preview. Auto-refresh keeps the preview truthful.
 - **Normal run:** print the summary and notes, then `wrote <path>` for each
   file. On validation errors, exit non-zero with `error: <problems>`.
 
-## 13. Acceptance checks
+## 13. Web version
+
+A TypeScript port in `web/` runs entirely in the browser. It is a static site
+(Vite) published to GitHub Pages and works offline through a service worker.
+
+**Structure**
+- `src/core/` is pure TypeScript with no browser APIs. It mirrors
+  `pixelkit.py` module by module: settings, geometry, parts, packing, SVG,
+  pattern, emoji and kit.
+- `src/image/` holds browser image I/O and an exact PNG decoder.
+- `src/ui/` holds the page: the form, live preview, emoji picker, downloads and
+  storage.
+
+**Parity requirement:** for the same settings and pixels, the web version must
+write byte-identical SVGs and choose the same palette and grid as
+`pixelkit.py`. That takes three things:
+- **Python's numerics:** `round()` with half-to-even ties, `%.Nf` formatting
+  with exact-tie rounding, and `%g`.
+- **Pillow's integer math:**
+  - alpha compositing with 7 precision bits;
+  - the box resampling filter, which includes +0.5 and excludes −0.5, uses 22
+    precision bits, and runs a horizontal pass then a vertical pass;
+  - the L conversion weights 19595/38470/7471.
+- **A step-for-step port of Pillow's median-cut quantizer** (`libImaging/Quant.c`):
+  - a hash scale that keeps it at 65,536 entries or fewer;
+  - a max-heap ordered by pixel count, with Pillow's exact sift order;
+  - the split axis chosen by luminance-weighted range (77/150/29);
+  - a split at the pixel-count median;
+  - box means with +0.5 rounding;
+  - each color mapped to its nearest palette entry, searched from its own box.
+
+**Images in the browser:**
+- **PNGs:** decoded by a small built-in decoder (including Adam7 interlacing),
+  because canvas decoding premultiplies alpha and rounds the edge pixels of
+  emoji.
+- **Other formats:** decoded by the browser. Browsers use libjpeg-turbo for
+  JPEG, as Pillow does.
+- **Emoji:** loaded from the same `emoji/twemoji-72.zip`, which the build copies
+  into the site.
+
+**Platform differences:**
+- **Output:** downloads, as one zip plus individual files, instead of an output
+  folder.
+- **Settings:** kept in `localStorage` with JSON export and import, instead of
+  `~/.pixelkit.json`.
+- **Last picture:** kept in IndexedDB.
+- **No CLI.**
+
+**Tests:** `web/tests/` holds:
+- the §14 acceptance checks;
+- the byte-for-byte SVG parity tests against the Python CLI;
+- exact picture parity, for two emoji, the sample JPEG and a gradient;
+- the PNG decoder checked against `pngjs` on all 4,009 emoji.
+
+The parity tests skip themselves when `python3` with Pillow isn't available.
+
+## 14. Acceptance checks
 
 A reimplementation should pass these checks.
 

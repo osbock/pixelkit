@@ -7,6 +7,47 @@ Give it a grid size and your material, optionally a picture (any image file, or
 an emoji from the bundled Twemoji set), and it writes cut-ready SVGs with kerf
 compensation built in.
 
+There are two versions with the same features and the same output:
+
+- **In the browser:** <https://osbock.github.io/pixelkit/>. Nothing to install,
+  and it works offline after the first visit. The source is in [`web/`](web/).
+- **Python desktop app:** `pixelkit.py`, with a Tk GUI and a command line.
+  See [Requirements](#requirements) and [Usage](#usage).
+
+## Web version
+
+Open <https://osbock.github.io/pixelkit/>, or run it locally:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+It works like the desktop app, with a few differences:
+
+- **Download kit (.zip)** saves every file of the kit in one zip. The files
+  are also listed for downloading one at a time.
+- Choose a picture with **Choose image…**, by dropping an image anywhere on the
+  page, or with **Emoji…**.
+- The preview updates as you type. Scroll to zoom, drag to pan, and
+  double-click to fit.
+- Settings are kept in the browser, and so is the last picture you chose.
+  **Export settings** and **Import settings** move a kit's settings between
+  machines.
+
+The web version is a TypeScript port of `pixelkit.py`, checked against it by
+tests:
+
+- The test suite runs the Python CLI and compares every SVG byte for byte
+  across tray styles, joints, tile layouts and the kerf test.
+- Emoji, JPEG and photo pictures must give exactly Pillow's palette and grid.
+- Run the tests with `npm test` in `web/` (the parity tests need `python3` with
+  Pillow).
+
+Every push to `main` runs the tests and publishes the site to GitHub Pages
+(`.github/workflows/pages.yml`).
+
 ## What you get
 
 - **Tray**, in one of two styles:

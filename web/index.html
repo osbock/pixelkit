@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Generate laser-cut pixel art kits as SVG: tray, tiles and a color-by-number pattern." />
+    <title>Pixel Art Kit Generator</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 4'%3E%3Crect width='2' height='2' fill='%231e8cdc'/%3E%3Crect x='2' width='2' height='2' fill='%23f5be28'/%3E%3Crect y='2' width='2' height='2' fill='%23f5be28'/%3E%3Crect x='2' y='2' width='2' height='2' fill='%2341721d'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Pixel Art Kit Generator</h1>
+      <div class="topbar-actions">
+        <button type="button" id="export-settings" class="ghost">Export settings</button>
+        <label class="ghost button">Import settings<input type="file" id="import-settings" accept=".json,application/json" hidden /></label>
+        <button type="button" id="reset-settings" class="ghost">Reset</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <form id="form" class="form" autocomplete="off" novalidate></form>
+
+      <section class="side" aria-label="Preview">
+        <pre id="summary" class="summary"></pre>
+        <div id="preview" class="preview" title="Scroll to zoom, drag to pan, double-click to fit"></div>
+        <div class="nav">
+          <button type="button" id="prev" aria-label="Previous sheet">◀</button>
+          <button type="button" id="next" aria-label="Next sheet">▶</button>
+          <span id="sheet-label" class="sheet-label"></span>
+          <label class="check"><input type="checkbox" id="show-picture" /> Show picture</label>
+        </div>
+        <div id="log" class="log" role="status" aria-live="polite"></div>
+        <div class="actions">
+          <button type="button" id="download" class="primary">Download kit (.zip)</button>
+          <button type="button" id="kerf-test">Kerf test</button>
+        </div>
+        <ul id="files" class="files"></ul>
+      </section>
+    </main>
+
+    <dialog id="emoji-dialog" class="emoji-dialog">
+      <form method="dialog" class="emoji-form">
+        <div class="emoji-search">
+          <label for="emoji-query">Search</label>
+          <input id="emoji-query" type="search" placeholder="a name, or paste an emoji" autocomplete="off" />
+        </div>
+        <div id="emoji-grid" class="emoji-grid" role="listbox" aria-label="Emoji"></div>
+        <div class="emoji-footer">
+          <span id="emoji-status"></span>
+          <span class="spacer"></span>
+          <button value="cancel" formnovalidate>Cancel</button>
+          <button value="use" id="emoji-use" class="primary">Use</button>
+        </div>
+      </form>
+    </dialog>
+
+    <footer class="footer">
+      pixelkit · MIT License · Emoji graphics: <a href="https://github.com/jdecked/twemoji">Twemoji</a>, CC BY 4.0
+      · <a href="https://github.com/osbock/pixelkit">source</a>
+    </footer>
+    <script type="module" src="/src/ui/main.ts"></script>
+  </body>
+</html>

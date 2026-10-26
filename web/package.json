@@ -1,0 +1,27 @@
+{
+  "name": "pixelkit-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Browser version of pixelkit: laser-cut pixel art kits as SVG",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "copy-assets": "node scripts/copy-assets.mjs",
+    "dev": "npm run copy-assets && vite",
+    "build": "npm run copy-assets && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/pngjs": "^6.0.5",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}
