@@ -79,7 +79,7 @@ export function build(s: Settings, picture: RGBAImage | null, pattern: Pattern |
 }
 
 function tileCount(block: Piece, s: Settings): number {
-  const p = s.pixel + s.kerf;
+  const p = s.pixel + s.tile_kerf;
   const [w, h] = block.size;
   return Math.round((w - 2 * s.tile_border) / p) * Math.round((h - 2 * s.tile_border) / p);
 }
@@ -89,7 +89,7 @@ export function summary(s: Settings): string {
   const t = s.tray_thickness;
   const lines = [
     `Picture: ${s.cols} x ${s.rows} = ${s.cols * s.rows} tiles, ${g(s.cols * s.pixel)} x ${g(s.rows * s.pixel)} mm`,
-    `Tile pitch on sheet: ${fixed(s.pixel + s.kerf, 3)} mm (pixel + kerf)`,
+    `Tile pitch on sheet: ${fixed(s.pixel + s.tile_kerf, 3)} mm (pixel + tile kerf)`,
     `Tray inside: ${fixed(win, 1)} x ${fixed(hin, 1)} mm`,
   ];
   if (s.tray_style === "box") {
@@ -163,7 +163,7 @@ export function kerfTest(s: Settings): { file: OutFile; sheet: SheetOut; notes: 
     `Kerf test: ${vals.length} plate + tab pairs in ${g(s.tray_thickness)} mm stock, ` +
       `kerf ${fixed(vals[0], 2)} to ${fixed(vals[vals.length - 1], 2)} mm (joint play ${g(s.joint_play)} mm).`,
     `Sheet is ${fixed(w, 0)} x ${fixed(h, 0)} mm. Push each tab piece into the plate above it. Use the kerf of the pair ` +
-      "that fits snugly by hand; if none do, adjust Kerf and cut the test again.",
+      "that fits snugly by hand as the tray kerf; if none do, adjust Tray kerf and cut the test again.",
   ];
   return { file: { name: `${stem}.svg`, text: sheetSvg(w, h, items) }, sheet: { stem, w, h, items }, notes };
 }

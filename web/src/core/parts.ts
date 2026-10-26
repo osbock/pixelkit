@@ -159,10 +159,10 @@ export function makeKerfTest(s: Settings): Piece[] {
  * right edges) stops short around the middle of each tile, leaving a
  * tab_width bridge: each tile hangs on its left and right neighbours, rows
  * come apart along the horizontal cuts, and row ends hold on to the side
- * frame. The gap in the path is tab_width + kerf, because the beam reaches
- * kerf/2 past each end of a cut. */
+ * frame. The gap in the path is tab_width + tile_kerf, because the beam
+ * reaches kerf/2 past each end of a cut. */
 export function tileBlock(name: string, c: number, r: number, s: Settings, label = ""): Piece {
-  const p = s.pixel + s.kerf;
+  const p = s.pixel + s.tile_kerf;
   const bd = s.tile_border;
   const w = c * p, h = r * p;
   const piece = new Piece(name);
@@ -176,7 +176,7 @@ export function tileBlock(name: string, c: number, r: number, s: Settings, label
       const pts: Seg = [[x, bd], [x, bd + h]];
       return [i % 2 ? pts : pts.reverse()];
     }
-    const half = (s.tab_width + s.kerf) / 2;
+    const half = (s.tab_width + s.tile_kerf) / 2;
     const segs: Seg[] = [];
     let y = bd;
     for (let j = 0; j < r; j++) {
@@ -209,7 +209,7 @@ export function tileBlock(name: string, c: number, r: number, s: Settings, label
 
 /** Most tile columns and rows one block can have on a sheet. */
 export function tileCapacity(s: Settings): [number, number] {
-  const p = s.pixel + s.kerf;
+  const p = s.pixel + s.tile_kerf;
   const maxc = Math.floor((s.sheet_width - 2 * s.spacing - 2 * s.tile_border) / p);
   const maxr = Math.floor((s.sheet_height - 2 * s.spacing - 2 * s.tile_border) / p);
   if (maxc < 1 || maxr < 1) throw new Error("Sheet is too small for even one tile");

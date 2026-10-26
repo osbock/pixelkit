@@ -97,7 +97,7 @@ the picture needs.
 python3 pixelkit.py
 ```
 
-1. Set the grid, material thickness and kerf.
+1. Set the grid, material thickness, and the tray and tile kerf.
 2. Choose a picture with **…** (an image file) or **Emoji…** (the bundled
    emoji).
 3. **Set grid from image** detects the grid of upscaled pixel art. For an
@@ -129,7 +129,8 @@ All lengths are in mm.
 | `cols`, `rows` | 20, 25 | Picture size in tiles |
 | `pixel` | 10 | Finished tile size |
 | `tile_thickness`, `tray_thickness` | 3, 3 | Stock thickness for the tiles and for the tray |
-| `kerf` | 0.15 | Width of the laser cut. Tiles are spaced at pixel + kerf so they come out at the pixel size, and tray outlines are offset by kerf/2 so joints fit. |
+| `kerf` | 0.15 | Tray kerf: the width of the laser cut in tray stock. Tray outlines are offset by kerf/2 so joints fit. |
+| `tile_kerf` | 0.15 | Tile kerf: tiles are spaced at pixel + tile kerf so they come out at the pixel size. Set it lower than your real kerf for smaller, looser tiles (each 0.05 mm less makes every tile 0.05 mm smaller), or to match tile stock that cuts differently. |
 | `tray_style` | box | `box`, `layered` or `none` |
 | `tile_clearance` | 1.0 | Total slack between the tiles and the tray wall |
 | `lip` | 4 | How far the wall stands above the tiles. The wall height is tray thickness + tile thickness + lip, so 10 mm by default. |
@@ -137,7 +138,7 @@ All lengths are in mm.
 | `joint_play` | 0 | Extra gap per finger joint: positive is looser, negative is tighter |
 | `frame_width` | 10 | Frame border width, `layered` style only |
 | `engrave_grid`, `engrave_numbers` | on, off | Engrave the tile grid and the color numbers on the base |
-| `sheet_width`, `sheet_height` | 600, 400 | Laser bed or stock size |
+| `sheet_width`, `sheet_height` | 304, 304 | Laser bed or stock size (304 mm is about 12 in) |
 | `spacing` | 3 | Gap between parts and from the sheet edges |
 | `tile_border` | 5 | Waste frame around each tile block (0 = none) |
 | `tile_tabs` | off | Leave small uncut bridges on the vertical tile cuts, so tiles stay in the sheet until you snap them out |
@@ -164,9 +165,13 @@ Each tile takes the most common color in its area, so pixel art stays crisp.
 ## Tips
 
 - Cut the kerf test first, in the stock you'll use for the tray. Push each
-  tab piece into the plate above it, then set **Kerf** to the value of the
-  pair that fits snugly by hand. If they're all too loose or too tight, set
-  Kerf to the best one and cut the test again.
+  tab piece into the plate above it, then set **Tray kerf** to the value of
+  the pair that fits snugly by hand. If they're all too loose or too tight,
+  set Tray kerf to the best one and cut the test again. Start **Tile kerf** at
+  the same value.
+- If the tiles are too tight in the tray, either lower **Tile kerf**, which
+  shrinks every tile, or raise **Tile clearance**, which enlarges the tray
+  opening. Lowering the tile kerf keeps the gaps between tiles even.
 - To fix individual tiles, edit `<picture name>_scaled.png` from the output
   folder and choose it as the image, keeping the same grid size. It is then
   used exactly as drawn. The exceptions are colors closer than about 24 RGB

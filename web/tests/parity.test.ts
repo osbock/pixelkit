@@ -42,6 +42,8 @@ const CASES: [string, Partial<Settings>][] = [
   ["no tray, no border", { tray_style: "none", tile_border: 0, spare_percent: 50, cols: 30, rows: 30 }],
   ["oversize base", { cols: 40, rows: 50, pixel: 6, sheet_width: 304, sheet_height: 304 }],
   ["tile tabs", { tile_tabs: true, cols: 7, rows: 5 }],
+  ["looser tiles: tile kerf below tray kerf", { tile_kerf: 0.05, kerf: 0.2, tile_tabs: true }],
+  ["old 600 x 400 sheet", { sheet_width: 600, sheet_height: 400 }],
   ["tile tabs, wide, no border", { tile_tabs: true, tab_width: 1.2, tile_border: 0, kerf: 0.2, tray_style: "none" }],
 ];
 

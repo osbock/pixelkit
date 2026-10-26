@@ -83,7 +83,8 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `pixel` | float | 10.0 | Finished tile edge |
 | `tile_thickness` | float | 3.0 | Tile stock thickness |
 | `tray_thickness` | float | 3.0 | Tray stock thickness |
-| `kerf` | float | 0.15 | Laser cut width |
+| `kerf` | float | 0.15 | Laser cut width in tray stock (tray parts and the kerf test) |
+| `tile_kerf` | float | 0.15 | Kerf compensation for tile sheets (§5.7). Lower than the real kerf gives smaller, looser tiles. |
 | `tray_style` | choice | `box` | `box`, `layered` or `none` |
 | `tile_clearance` | float | 1.0 | Total slack between the tile area and the tray wall (per axis) |
 | `lip` | float | 4.0 | How far the wall stands above the tiles. A box's wall height is `tray_thickness + tile_thickness + lip`, which is 10 mm by default. |
@@ -92,7 +93,7 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `frame_width` | float | 10.0 | Frame border width (`layered` only) |
 | `engrave_grid` | bool | true | Engrave the tile grid on the base |
 | `engrave_numbers` | bool | false | Engrave color numbers on the base (needs a picture) |
-| `sheet_width`, `sheet_height` | float | 600, 400 | Bed or stock size |
+| `sheet_width`, `sheet_height` | float | 304, 304 | Bed or stock size (about 12 in square) |
 | `spacing` | float | 3.0 | Gap between parts, and from the sheet edges |
 | `tile_border` | float | 5.0 | Waste frame around each tile block (0 = none) |
 | `tile_tabs` | bool | false | Leave uncut bridges on the vertical tile cuts (§5.7) |
@@ -109,13 +110,18 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 - **6 mm fingers and 10 mm walls** give 3 interlocking corner segments in
   3 mm stock. At 7 mm walls, corners degrade to butt joints.
 - **`combined`** matches the common workflow: cut natural wood, then paint.
+- **304 × 304 mm sheets** match common 12-inch stock and small laser beds. A
+  20 × 25 kit's tray and tiles each fit on one such sheet.
+- **Saved settings win:** a saved settings file (`~/.pixelkit.json`, or
+  browser storage on the web) overrides these defaults. Keys missing from it,
+  such as settings added in a later version, take the defaults.
 
 ### Validation (refuse to generate, listing every problem)
 
 - `cols` and `rows` must be at least 1 and at most **300**. **Why:** a user once
   set a 1856 × 2304 grid from an image's pixel size and the layout hung.
 - `pixel`, both thicknesses and both sheet dimensions must be greater than 0.
-- `kerf` must satisfy 0 ≤ kerf < pixel.
+- `kerf` must satisfy 0 ≤ kerf < pixel, and so must `tile_kerf`.
 - With `tile_tabs`, `tab_width` must satisfy 0 < tab_width < pixel/2.
 - Choice fields must hold a listed value.
 - In `box` style, `finger_width` must be at least 2·kerf + 1.
@@ -228,7 +234,7 @@ to each part, split across two sides, so the total gap per joint equals
 - The tile area's top-left corner is the base's inner corner plus
   clearance/2 on each axis.
 - **Grid:** `cols+1` vertical and `rows+1` horizontal engrave lines at pitch
-  `pixel` (not pixel + kerf; the tiles come out at `pixel`).
+  `pixel` (not pixel + tile_kerf; the tiles come out at `pixel`).
 - **Color numbers:** the 1-based palette index, centred in each cell, at
   size 0.42·pixel. The baseline is the cell centre + 0.35·size.
 - The base always records the tile-area corners, for previews.
@@ -252,9 +258,12 @@ rim height relative to the tiles: t·N − tile_thickness.
 
 ### 5.7 Tile blocks
 
-- **Pitch:** p = pixel + kerf. **Why:** with a shared cut line between
+- **Pitch:** p = pixel + tile_kerf. **Why:** with a shared cut line between
   neighbours, each tile loses kerf/2 on each side, so each comes out at
-  exactly `pixel`.
+  exactly `pixel` when tile_kerf equals the real kerf. `tile_kerf` is
+  separate from the tray's `kerf`, so tiles can be made deliberately looser
+  (a lower value shrinks every tile by the difference) or matched to tile
+  stock that cuts differently.
 - **Block:** c × r tiles, laid out as:
   - c−1 interior vertical lines and r−1 interior horizontal lines (serpentine);
   - then the outer rectangle of the tile area;
@@ -264,7 +273,7 @@ rim height relative to the tiles: t·N − tile_thickness.
   shared edges.
 - **Tabs (`tile_tabs`):** every vertical line, including the tile area's left
   and right edges, is cut as separate segments. Each line leaves a gap of
-  `tab_width + kerf`, centred at each tile's mid-height (bd + (j + ½)·p). The
+  `tab_width + tile_kerf`, centred at each tile's mid-height (bd + (j + ½)·p). The
   beam reaches kerf/2 past each end of a cut, so the uncut bridge comes out at
   `tab_width`.
   - **Result:** every tile has two bridges, one to the left and one to the
@@ -374,7 +383,7 @@ This is the same joint as the box's base-to-wall fit.
 max(spacing, 2) mm apart. The SVG is sized to the content (about 193 × 39 mm
 at the defaults), so it can be placed on scrap.
 
-**Output:** `<name>_kerf_test.svg`. Notes tell the user to set Kerf to the
+**Output:** `<name>_kerf_test.svg`. Notes tell the user to set Tray kerf to the
 pair that fits snugly by hand, and to re-run centred on the best value if none
 fit.
 

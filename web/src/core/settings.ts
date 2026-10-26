@@ -10,7 +10,8 @@ export interface Settings {
   pixel: number;            // finished tile size, mm
   tile_thickness: number;
   tray_thickness: number;
-  kerf: number;             // width of the laser cut, mm
+  kerf: number;             // width of the laser cut in tray stock, mm
+  tile_kerf: number;        // kerf compensation for tiles; lower = smaller, looser tiles
   tray_style: (typeof TRAY_STYLES)[number];
   tile_clearance: number;   // total slack between tiles and tray wall
   lip: number;              // how far the wall stands above the tiles
@@ -40,6 +41,7 @@ export const DEFAULTS: Settings = {
   tile_thickness: 3,
   tray_thickness: 3,
   kerf: 0.15,
+  tile_kerf: 0.15,
   tray_style: "box",
   tile_clearance: 1,
   lip: 4,
@@ -48,8 +50,8 @@ export const DEFAULTS: Settings = {
   frame_width: 10,
   engrave_grid: true,
   engrave_numbers: false,
-  sheet_width: 600,
-  sheet_height: 400,
+  sheet_width: 304,  // about 12 in
+  sheet_height: 304,
   spacing: 3,
   tile_border: 5,
   tile_tabs: false,
@@ -98,6 +100,7 @@ export function validate(s: Settings): string[] {
     if (!(s[k] > 0)) problems.push(`${k} must be positive.`);
   }
   if (s.kerf < 0 || s.kerf >= s.pixel) problems.push("Kerf must be between 0 and the pixel size.");
+  if (s.tile_kerf < 0 || s.tile_kerf >= s.pixel) problems.push("Tile kerf must be between 0 and the pixel size.");
   if (!TRAY_STYLES.includes(s.tray_style)) problems.push(`tray_style must be one of ${TRAY_STYLES.join(", ")}.`);
   if (!TILE_SHEETS.includes(s.tile_sheets)) problems.push(`tile_sheets must be one of ${TILE_SHEETS.join(", ")}.`);
   if (s.tile_tabs && !(s.tab_width > 0 && s.tab_width < s.pixel / 2)) {

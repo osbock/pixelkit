@@ -53,7 +53,8 @@ class Settings:
     pixel: float = 10.0            # finished tile size, mm
     tile_thickness: float = 3.0
     tray_thickness: float = 3.0
-    kerf: float = 0.15             # width of the laser cut, mm
+    kerf: float = 0.15             # width of the laser cut in tray stock, mm
+    tile_kerf: float = 0.15        # kerf compensation for tiles; lower = smaller, looser tiles
     tray_style: str = "box"        # box | layered | none
     tile_clearance: float = 1.0    # total slack between tiles and tray wall
     lip: float = 4.0               # how far the wall stands above the tiles (3+3+4 = 10 mm wall)
@@ -62,8 +63,8 @@ class Settings:
     frame_width: float = 10.0      # frame border for the layered style
     engrave_grid: bool = True
     engrave_numbers: bool = False  # needs a pattern image
-    sheet_width: float = 600.0     # laser bed / stock size
-    sheet_height: float = 400.0
+    sheet_width: float = 304.0     # laser bed / stock size (about 12 in)
+    sheet_height: float = 304.0
     spacing: float = 3.0           # gap between parts and from sheet edge
     tile_border: float = 5.0       # waste frame around each tile block (0 = none)
     tile_tabs: bool = False        # leave bridges on the vertical tile cuts
@@ -394,9 +395,9 @@ def tile_block(name, c, r, s, label=""):
     right edges) stops short around the middle of each tile, leaving a
     tab_width bridge: each tile hangs on its left and right neighbours, rows
     come apart along the horizontal cuts, and row ends hold on to the side
-    frame. The gap in the path is tab_width + kerf, because the beam reaches
-    kerf/2 past each end of a cut."""
-    p = s.pixel + s.kerf
+    frame. The gap in the path is tab_width + tile_kerf, because the beam
+    reaches kerf/2 past each end of a cut."""
+    p = s.pixel + s.tile_kerf
     bd = s.tile_border
     w, h = c * p, r * p
     piece = Piece(name)
@@ -409,7 +410,7 @@ def tile_block(name, c, r, s, label=""):
         if not s.tile_tabs:
             pts = [(x, bd), (x, bd + h)]
             return [pts if i % 2 else pts[::-1]]
-        half = (s.tab_width + s.kerf) / 2
+        half = (s.tab_width + s.tile_kerf) / 2
         segs, y = [], bd
         for j in range(r):
             mid = bd + (j + 0.5) * p
@@ -438,7 +439,7 @@ def tile_block(name, c, r, s, label=""):
 
 def tile_capacity(s):
     """Most tile columns and rows one block can have on a sheet."""
-    p = s.pixel + s.kerf
+    p = s.pixel + s.tile_kerf
     room_w = s.sheet_width - 2 * s.spacing - 2 * s.tile_border
     room_h = s.sheet_height - 2 * s.spacing - 2 * s.tile_border
     maxc, maxr = int(room_w // p), int(room_h // p)
@@ -891,6 +892,8 @@ def validate(s):
             problems.append(f"{k} must be positive.")
     if s.kerf < 0 or s.kerf >= s.pixel:
         problems.append("Kerf must be between 0 and the pixel size.")
+    if s.tile_kerf < 0 or s.tile_kerf >= s.pixel:
+        problems.append("Tile kerf must be between 0 and the pixel size.")
     for key, options in CHOICES.items():
         if getattr(s, key) not in options:
             problems.append(f"{key} must be one of {options}.")
@@ -964,7 +967,7 @@ def build(s):
 
 def _tile_count(block, s):
     # Interior lines = (c-1) + (r-1); recover c and r from the block size.
-    p = s.pixel + s.kerf
+    p = s.pixel + s.tile_kerf
     w, h = block.size
     return round((w - 2 * s.tile_border) / p) * round((h - 2 * s.tile_border) / p)
 
@@ -975,7 +978,7 @@ def summary(s):
     lines = [
         f"Picture: {s.cols} x {s.rows} = {s.cols * s.rows} tiles, "
         f"{s.cols * s.pixel:g} x {s.rows * s.pixel:g} mm",
-        f"Tile pitch on sheet: {s.pixel + s.kerf:.3f} mm (pixel + kerf)",
+        f"Tile pitch on sheet: {s.pixel + s.tile_kerf:.3f} mm (pixel + tile kerf)",
         f"Tray inside: {win:.1f} x {hin:.1f} mm",
     ]
     if s.tray_style == "box":
@@ -1011,7 +1014,7 @@ def generate_kerf_test(s):
         f"Kerf test: {len(vals)} plate + tab pairs in {s.tray_thickness:g} mm stock, "
         f"kerf {vals[0]:.2f} to {vals[-1]:.2f} mm (joint play {s.joint_play:g} mm).",
         f"Sheet is {w:.0f} x {h:.0f} mm. Push each tab piece into the plate above it. Use the kerf of the pair "
-        "that fits snugly by hand; if none do, adjust Kerf and cut the test again.",
+        "that fits snugly by hand as the tray kerf; if none do, adjust Tray kerf and cut the test again.",
     ]
     return path, [(path.stem, w, h, items)], notes
 
@@ -1082,7 +1085,7 @@ def generate(s):
 FORM = [
     ("Grid", [("cols", "Columns"), ("rows", "Rows"), ("pixel", "Pixel size (mm)")]),
     ("Material", [("tile_thickness", "Tile thickness (mm)"), ("tray_thickness", "Tray thickness (mm)"),
-                  ("kerf", "Kerf (mm)")]),
+                  ("kerf", "Tray kerf (mm)"), ("tile_kerf", "Tile kerf (mm)")]),
     ("Tray", [("tray_style", "Style"), ("tile_clearance", "Tile clearance (mm)"),
               ("lip", "Wall above tiles (mm)"), ("finger_width", "Finger width (mm)"),
               ("joint_play", "Joint play (mm)"), ("frame_width", "Frame width (layered, mm)"),

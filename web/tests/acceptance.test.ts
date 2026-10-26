@@ -2,7 +2,7 @@
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Piece } from "../src/core/geometry";
-import { build, generate, scaledImageName } from "../src/core/kit";
+import { build, generate, scaledImageName, summary } from "../src/core/kit";
 import { makeBox, makeKerfTest } from "../src/core/parts";
 import { composite, detectGrid, loadPattern, scaledImage, type RGBAImage } from "../src/core/pattern";
 import { DEFAULTS, type Settings, validate } from "../src/core/settings";
@@ -153,5 +153,20 @@ describe("tile tabs", () => {
   it("rejects tabs wider than half a tile", () => {
     expect(validate(S({ tile_tabs: true, tab_width: 6 }))).toContain(
       "Tab width must be more than 0 and less than half the pixel size.");
+  });
+});
+
+describe("tile kerf", () => {
+  it("sets the tile pitch independently of the tray kerf", () => {
+    const tiles = (p: Partial<Settings>) => build(S({ ...p, tray_style: "none", cols: 2, rows: 1, spare_percent: 0 }), null).sheets[0].items[0];
+    const xsOf = (pc: Piece) => pc.cuts.filter((c) => !c.closed && c.pts[0][0] === c.pts[1][0]).map((c) => c.pts[0][0]);
+    // One interior vertical line between two tiles, at border + pitch.
+    const block = tiles({ tile_kerf: 0.05, kerf: 0.3 }).normalized();
+    expect(xsOf(block)[0]).toBeCloseTo(5 + 10.05);
+    expect(summary(S({ tile_kerf: 0.05 }))).toContain("Tile pitch on sheet: 10.050 mm (pixel + tile kerf)");
+  });
+
+  it("defaults to a 304 mm (12 in) square sheet", () => {
+    expect([DEFAULTS.sheet_width, DEFAULTS.sheet_height]).toEqual([304, 304]);
   });
 });
