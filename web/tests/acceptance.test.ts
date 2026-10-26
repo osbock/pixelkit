@@ -170,3 +170,21 @@ describe("tile kerf", () => {
     expect([DEFAULTS.sheet_width, DEFAULTS.sheet_height]).toEqual([304, 304]);
   });
 });
+
+describe("tile kerf and tabs together", () => {
+  it("sizes tab gaps from the tray kerf, so bridges keep their width with looser tiles", () => {
+    for (const tile_kerf of [0.15, 0, -0.3]) {
+      const s = S({ tile_tabs: true, tile_kerf, kerf: 0.1, cols: 2, rows: 1, tray_style: "none", spare_percent: 0 });
+      const block = build(s, null).sheets[0].items[0].normalized();
+      const left = block.cuts.filter((c) => !c.closed && c.pts[0][0] === s.tile_border && c.pts[1][0] === s.tile_border);
+      const ys = left.flatMap((c) => c.pts.map((pt) => pt[1])).sort((a, b) => a - b);
+      expect(ys[2] - ys[1]).toBeCloseTo(0.5 + 0.1); // tab_width + tray kerf, whatever the tile kerf
+    }
+  });
+
+  it("accepts a negative tile kerf down to -1 mm", () => {
+    expect(validate(S({ tile_kerf: -1 }))).toEqual([]);
+    expect(validate(S({ tile_kerf: -1.01 }))).toContain("Tile kerf must be between -1 mm and the pixel size.");
+    expect(summary(S({ tile_kerf: -0.2 }))).toContain("Tile pitch on sheet: 9.800 mm");
+  });
+});

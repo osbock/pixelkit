@@ -159,8 +159,10 @@ export function makeKerfTest(s: Settings): Piece[] {
  * right edges) stops short around the middle of each tile, leaving a
  * tab_width bridge: each tile hangs on its left and right neighbours, rows
  * come apart along the horizontal cuts, and row ends hold on to the side
- * frame. The gap in the path is tab_width + tile_kerf, because the beam
- * reaches kerf/2 past each end of a cut. */
+ * frame. The gap in the path is tab_width + kerf, because the beam reaches
+ * kerf/2 past each end of a cut. That uses the real beam width (the tray
+ * kerf), not tile_kerf, so bridges stay tab_width however loose the tiles
+ * are made. */
 export function tileBlock(name: string, c: number, r: number, s: Settings, label = ""): Piece {
   const p = s.pixel + s.tile_kerf;
   const bd = s.tile_border;
@@ -176,7 +178,7 @@ export function tileBlock(name: string, c: number, r: number, s: Settings, label
       const pts: Seg = [[x, bd], [x, bd + h]];
       return [i % 2 ? pts : pts.reverse()];
     }
-    const half = (s.tab_width + s.tile_kerf) / 2;
+    const half = (s.tab_width + s.kerf) / 2;
     const segs: Seg[] = [];
     let y = bd;
     for (let j = 0; j < r; j++) {

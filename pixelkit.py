@@ -54,7 +54,7 @@ class Settings:
     tile_thickness: float = 3.0
     tray_thickness: float = 3.0
     kerf: float = 0.15             # width of the laser cut in tray stock, mm
-    tile_kerf: float = 0.15        # kerf compensation for tiles; lower = smaller, looser tiles
+    tile_kerf: float = 0.15        # kerf compensation for tiles; lower (even negative) = smaller, looser tiles
     tray_style: str = "box"        # box | layered | none
     tile_clearance: float = 1.0    # total slack between tiles and tray wall
     lip: float = 4.0               # how far the wall stands above the tiles (3+3+4 = 10 mm wall)
@@ -395,8 +395,10 @@ def tile_block(name, c, r, s, label=""):
     right edges) stops short around the middle of each tile, leaving a
     tab_width bridge: each tile hangs on its left and right neighbours, rows
     come apart along the horizontal cuts, and row ends hold on to the side
-    frame. The gap in the path is tab_width + tile_kerf, because the beam
-    reaches kerf/2 past each end of a cut."""
+    frame. The gap in the path is tab_width + kerf, because the beam reaches
+    kerf/2 past each end of a cut. That uses the real beam width (the tray
+    kerf), not tile_kerf, so bridges stay tab_width however loose the tiles
+    are made."""
     p = s.pixel + s.tile_kerf
     bd = s.tile_border
     w, h = c * p, r * p
@@ -410,7 +412,7 @@ def tile_block(name, c, r, s, label=""):
         if not s.tile_tabs:
             pts = [(x, bd), (x, bd + h)]
             return [pts if i % 2 else pts[::-1]]
-        half = (s.tab_width + s.tile_kerf) / 2
+        half = (s.tab_width + s.kerf) / 2
         segs, y = [], bd
         for j in range(r):
             mid = bd + (j + 0.5) * p
@@ -892,8 +894,8 @@ def validate(s):
             problems.append(f"{k} must be positive.")
     if s.kerf < 0 or s.kerf >= s.pixel:
         problems.append("Kerf must be between 0 and the pixel size.")
-    if s.tile_kerf < 0 or s.tile_kerf >= s.pixel:
-        problems.append("Tile kerf must be between 0 and the pixel size.")
+    if s.tile_kerf < -1 or s.tile_kerf >= s.pixel:
+        problems.append("Tile kerf must be between -1 mm and the pixel size.")
     for key, options in CHOICES.items():
         if getattr(s, key) not in options:
             problems.append(f"{key} must be one of {options}.")

@@ -84,7 +84,7 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `tile_thickness` | float | 3.0 | Tile stock thickness |
 | `tray_thickness` | float | 3.0 | Tray stock thickness |
 | `kerf` | float | 0.15 | Laser cut width in tray stock (tray parts and the kerf test) |
-| `tile_kerf` | float | 0.15 | Kerf compensation for tile sheets (§5.7). Lower than the real kerf gives smaller, looser tiles. |
+| `tile_kerf` | float | 0.15 | Kerf compensation for tile sheets (§5.7). Lower than the real kerf, even negative, gives smaller, looser tiles. |
 | `tray_style` | choice | `box` | `box`, `layered` or `none` |
 | `tile_clearance` | float | 1.0 | Total slack between the tile area and the tray wall (per axis) |
 | `lip` | float | 4.0 | How far the wall stands above the tiles. A box's wall height is `tray_thickness + tile_thickness + lip`, which is 10 mm by default. |
@@ -121,7 +121,9 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 - `cols` and `rows` must be at least 1 and at most **300**. **Why:** a user once
   set a 1856 × 2304 grid from an image's pixel size and the layout hung.
 - `pixel`, both thicknesses and both sheet dimensions must be greater than 0.
-- `kerf` must satisfy 0 ≤ kerf < pixel, and so must `tile_kerf`.
+- `kerf` must satisfy 0 ≤ kerf < pixel.
+- `tile_kerf` must satisfy −1 ≤ tile_kerf < pixel. Negative values are allowed
+  for deliberately small, loose tiles.
 - With `tile_tabs`, `tab_width` must satisfy 0 < tab_width < pixel/2.
 - Choice fields must hold a listed value.
 - In `box` style, `finger_width` must be at least 2·kerf + 1.
@@ -273,9 +275,12 @@ rim height relative to the tiles: t·N − tile_thickness.
   shared edges.
 - **Tabs (`tile_tabs`):** every vertical line, including the tile area's left
   and right edges, is cut as separate segments. Each line leaves a gap of
-  `tab_width + tile_kerf`, centred at each tile's mid-height (bd + (j + ½)·p). The
+  `tab_width + kerf`, centred at each tile's mid-height (bd + (j + ½)·p). The
   beam reaches kerf/2 past each end of a cut, so the uncut bridge comes out at
-  `tab_width`.
+  `tab_width`. The gap uses the tray `kerf` (the real beam width), not
+  `tile_kerf`. **Why:** `tile_kerf` may be set below the real kerf on purpose
+  to loosen tiles, and using it here would shrink the bridges, or remove them
+  once it went negative.
   - **Result:** every tile has two bridges, one to the left and one to the
     right. The horizontal cuts stay unbroken, so rows come apart from each
     other, and each row's ends hold on to the side frame (or, with no border,

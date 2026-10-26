@@ -16,7 +16,7 @@ type FieldSpec = [Key, string, { step?: number; min?: number; choices?: readonly
 const FORM: [string, FieldSpec[]][] = [
   ["Grid", [["cols", "Columns", { step: 1, min: 1 }], ["rows", "Rows", { step: 1, min: 1 }], ["pixel", "Pixel size (mm)", { step: 0.5 }]]],
   ["Material", [["tile_thickness", "Tile thickness (mm)", { step: 0.1 }], ["tray_thickness", "Tray thickness (mm)", { step: 0.1 }],
-    ["kerf", "Tray kerf (mm)", { step: 0.01, min: 0 }], ["tile_kerf", "Tile kerf (mm)", { step: 0.01, min: 0 }]]],
+    ["kerf", "Tray kerf (mm)", { step: 0.01, min: 0 }], ["tile_kerf", "Tile kerf (mm)", { step: 0.01, min: -1 }]]],
   ["Tray", [["tray_style", "Style", { choices: TRAY_STYLES }], ["tile_clearance", "Tile clearance (mm)", { step: 0.1 }],
     ["lip", "Wall above tiles (mm)", { step: 0.5 }], ["finger_width", "Finger width (mm)", { step: 0.5 }],
     ["joint_play", "Joint play (mm)", { step: 0.05 }], ["frame_width", "Frame width (layered, mm)", { step: 1 }],
