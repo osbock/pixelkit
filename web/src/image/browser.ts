@@ -1,6 +1,6 @@
 // Browser image I/O: decode any image file to RGBA, encode RGBA as PNG.
 import type { RGBAImage } from "../core/pattern";
-import { decodePngExact } from "./png";
+import { addPngText, decodePngExact, SOURCE_KEY } from "./png";
 
 export async function decodeImage(bytes: Uint8Array, type = ""): Promise<RGBAImage> {
   const exact = decodePngExact(bytes);
@@ -22,7 +22,8 @@ export async function encodePng(img: RGBAImage): Promise<Uint8Array> {
   const ctx = canvas.getContext("2d")!;
   ctx.putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
   const blob = await canvas.convertToBlob({ type: "image/png" });
-  return new Uint8Array(await blob.arrayBuffer());
+  const png = new Uint8Array(await blob.arrayBuffer());
+  return img.source ? addPngText(png, SOURCE_KEY, img.source) : png;
 }
 
 export function download(name: string, data: Blob): void {

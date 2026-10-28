@@ -54,6 +54,23 @@
       </form>
     </dialog>
 
+    <dialog id="pixel-dialog" class="pixel-dialog">
+      <div class="pixel-head">
+        <span id="pixel-title" class="pixel-title"></span>
+        <div id="pixel-swatches" class="pixel-swatches" aria-label="Colors"></div>
+      </div>
+      <div class="pixel-body"><canvas id="pixel-canvas" class="pixel-canvas"></canvas></div>
+      <div class="pixel-hint">Click or drag to paint. Right-click (or Ctrl/Alt-click) a tile to pick its color.
+        Keys 1–9 choose a color; Ctrl/Cmd-Z undoes.</div>
+      <div class="pixel-foot">
+        <span id="pixel-counts" class="pixel-counts"></span>
+        <span class="spacer"></span>
+        <button type="button" id="pixel-undo">Undo</button>
+        <button type="button" id="pixel-cancel">Cancel</button>
+        <button type="button" id="pixel-save" class="primary">Save</button>
+      </div>
+    </dialog>
+
     <footer class="footer">
       pixelkit · MIT License · Emoji graphics: <a href="https://github.com/jdecked/twemoji">Twemoji</a>, CC BY 4.0
       · <a href="https://github.com/osbock/pixelkit">source</a>

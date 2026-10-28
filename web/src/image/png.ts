@@ -113,5 +113,59 @@ export function decodePngExact(bytes: Uint8Array): RGBAImage | null {
       if (!pass(Math.max(0, w), Math.max(0, h), x0, y0, dx, dy)) return null;
     }
   } else if (!pass(width, height, 0, 0, 1, 1)) return null;
-  return { width, height, data: out };
+  const source = readPngText(bytes)[SOURCE_KEY];
+  return source ? { width, height, data: out, source } : { width, height, data: out };
+}
+
+export const SOURCE_KEY = "pixelkit:source"; // PNG text chunk naming a scaled image's source
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff;
+  for (const b of bytes) c = CRC_TABLE[(c ^ b) & 255] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/** Insert a tEXt chunk (latin-1 key and value) after IHDR. */
+export function addPngText(png: Uint8Array, key: string, value: string): Uint8Array {
+  const body = new Uint8Array([...key, "\0", ...value].map((ch) => ch.charCodeAt(0) & 255));
+  const chunk = new Uint8Array(12 + body.length);
+  const view = new DataView(chunk.buffer);
+  view.setUint32(0, body.length);
+  chunk.set([116, 69, 88, 116], 4); // "tEXt"
+  chunk.set(body, 8);
+  view.setUint32(8 + body.length, crc32(chunk.subarray(4, 8 + body.length)));
+  const ihdrEnd = 8 + 12 + new DataView(png.buffer, png.byteOffset).getUint32(8);
+  const out = new Uint8Array(png.length + chunk.length);
+  out.set(png.subarray(0, ihdrEnd));
+  out.set(chunk, ihdrEnd);
+  out.set(png.subarray(ihdrEnd), ihdrEnd + chunk.length);
+  return out;
+}
+
+/** Read tEXt chunks into a key → value map. */
+export function readPngText(png: Uint8Array): Record<string, string> {
+  const out: Record<string, string> = {};
+  const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
+  for (let pos = 8; pos + 8 <= png.length;) {
+    const len = view.getUint32(pos);
+    const name = String.fromCharCode(...png.subarray(pos + 4, pos + 8));
+    if (name === "tEXt") {
+      const data = png.subarray(pos + 8, pos + 8 + len);
+      const zero = data.indexOf(0);
+      if (zero > 0) out[String.fromCharCode(...data.subarray(0, zero))] = String.fromCharCode(...data.subarray(zero + 1));
+    }
+    if (name === "IEND") break;
+    pos += 12 + len;
+  }
+  return out;
 }

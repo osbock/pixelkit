@@ -27,7 +27,14 @@ export class SettingsError extends Error {}
 /** The tile grid for s.image, given its decoded pixels. */
 export function patternFor(s: Settings, picture: RGBAImage): Pattern {
   const label = isEmoji(s.image) ? `emoji:${emojiCode(s.image)}` : "image";
-  return loadPattern(composite(picture, parseColor(s.background)!), s.cols, s.rows, s.colors, label);
+  const pattern = loadPattern(composite(picture, parseColor(s.background)!), s.cols, s.rows, s.colors, label);
+  pattern.source = isEmoji(s.image) ? s.image : (picture.source ?? "");
+  return pattern;
+}
+
+/** Whether a pattern's picture is (or was edited from) a bundled emoji. */
+export function needsEmojiCredit(pattern: Pattern | null): boolean {
+  return Boolean(pattern && isEmoji(pattern.source ?? ""));
 }
 
 /** Lay out every sheet. `picture` is the decoded image named by s.image;
@@ -38,7 +45,7 @@ export function build(s: Settings, picture: RGBAImage | null, pattern: Pattern |
   if (!s.image) pattern = null;
   else if (!pattern && picture) pattern = patternFor(s, picture);
   const notes: string[] = pattern ? [pattern.note] : [];
-  if (isEmoji(s.image) && pattern) notes.push(EMOJI_CREDIT);
+  if (needsEmojiCredit(pattern)) notes.push(EMOJI_CREDIT);
   const sheets: SheetOut[] = [];
 
   if (s.tray_style !== "none") {
@@ -128,7 +135,7 @@ export function generate(s: Settings, picture: RGBAImage | null, pattern: Patter
   const b = build(s, picture, pattern);
   const files: OutFile[] = b.sheets.map((sh) => ({ name: `${sh.stem}.svg`, text: sheetSvg(sh.w, sh.h, sh.items) }));
   if (b.pattern) {
-    files.push({ name: `${s.name}_pattern.svg`, text: patternSvg(s, b.pattern, b.needed, isEmoji(s.image) ? EMOJI_CREDIT : null) });
+    files.push({ name: `${s.name}_pattern.svg`, text: patternSvg(s, b.pattern, b.needed, needsEmojiCredit(b.pattern) ? EMOJI_CREDIT : null) });
     const name = scaledImageName(s);
     files.push({ name, image: scaledImage(b.pattern) });
     b.notes.push(`Scaled image for editing: ${name} (${s.cols} x ${s.rows} px, one pixel per tile)`);

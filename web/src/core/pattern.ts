@@ -7,8 +7,9 @@ import { hexcolor } from "./svg";
 
 export type RGB = [number, number, number];
 
-/** Decoded image, 4 bytes (RGBA) per pixel. */
-export interface RGBAImage { width: number; height: number; data: Uint8Array | Uint8ClampedArray }
+/** Decoded image, 4 bytes (RGBA) per pixel. `source` is the pixelkit:source
+ * text recorded in a PNG pixelkit wrote (e.g. "emoji:1f33b sunflower"). */
+export interface RGBAImage { width: number; height: number; data: Uint8Array | Uint8ClampedArray; source?: string }
 
 /** Opaque image, 3 bytes per pixel. */
 export interface RGBImage { width: number; height: number; data: Uint8Array }
@@ -18,6 +19,7 @@ export interface Pattern {
   counts: number[];
   grid: number[][];  // rows x cols palette indices
   note: string;
+  source?: string;   // where the picture came from: "emoji:..." keeps the credit
 }
 
 const pack = (r: number, g: number, b: number) => (r << 16) | (g << 8) | b;
@@ -443,5 +445,5 @@ export function scaledImage(pattern: Pattern): RGBAImage {
     const [r, g, b] = pattern.palette[idx];
     data.set([r, g, b, 255], (j * cols + i) * 4);
   }));
-  return { width: cols, height: rows, data };
+  return { width: cols, height: rows, data, source: pattern.source };
 }

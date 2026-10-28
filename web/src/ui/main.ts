@@ -1,11 +1,12 @@
 // pixelkit web app: settings form, live preview, emoji picker and downloads.
 import { zipSync } from "fflate";
 import { EmojiSet, emojiCode, isEmoji } from "../core/emoji";
-import { build, generate, kerfTest, type SheetOut, patternFor, summary } from "../core/kit";
-import { composite, detectGrid, type Pattern, type RGBAImage } from "../core/pattern";
+import { build, generate, kerfTest, type SheetOut, patternFor, scaledImageName, summary } from "../core/kit";
+import { composite, detectGrid, type Pattern, type RGBAImage, scaledImage } from "../core/pattern";
 import { DEFAULTS, INT_FIELDS, MAX_GRID, parseColor, type Settings, TILE_SHEETS, TRAY_STYLES } from "../core/settings";
 import { decodeImage, download, encodePng } from "../image/browser";
 import { EmojiPicker } from "./emojiPicker";
+import { PixelEditor } from "./pixelEditor";
 import { Preview } from "./preview";
 import { loadPicture, savePicture } from "./store";
 import "./style.css";
@@ -189,6 +190,7 @@ function imageControls(): HTMLElement {
     button("Choose image…", () => file.click()),
     button("Emoji…", () => void pickEmoji()),
     button("Set grid from image", setGridFromImage),
+    button("Edit pixels…", () => void editPixels()),
     button("Clear", () => {
       settings.image = "";
       picture = null;
@@ -341,6 +343,32 @@ async function pickEmoji(): Promise<void> {
   settings.rows = settings.cols; // emoji are square
   $<HTMLInputElement>("show-picture").checked = true;
   pending = `Emoji: ${set.name(code) || code}, grid set to ${settings.cols} x ${settings.cols}.`;
+  writeForm();
+  changed();
+}
+
+let pixelEditor: PixelEditor | null = null;
+
+/** Edit the mosaic tile by tile; saving makes <picture>_scaled.png the image. */
+async function editPixels(): Promise<void> {
+  if (readForm()) return;
+  const pattern = await currentPatternFor();
+  if (!pattern) {
+    log("Choose an image or an emoji first.", true);
+    return;
+  }
+  pixelEditor ??= new PixelEditor();
+  const grid = await pixelEditor.open(pattern);
+  if (!grid) return;
+  const edited: Pattern = { ...pattern, grid };
+  const image = scaledImage(edited);
+  const name = scaledImageName(settings);
+  const bytes = await encodePng(image);
+  picture = { id: `edited:${name}:${Date.now()}`, image };
+  settings.image = name;
+  $<HTMLInputElement>("show-picture").checked = true;
+  void savePicture({ name, id: picture.id, type: "image/png", bytes });
+  pending = `Saved the edited picture as ${name}; it is now the image (and goes in the kit download).`;
   writeForm();
   changed();
 }

@@ -682,6 +682,23 @@ def emoji_image_value(code):
     return f"{EMOJI_PREFIX}{code} {emoji_index().get(code, '')}".strip()
 
 
+SOURCE_KEY = "pixelkit:source"  # PNG text chunk naming what a scaled image came from
+
+
+def image_source(path):
+    """Where a picture came from: "emoji:<code> <name>" for a bundled emoji,
+    the source recorded in a pixelkit-written PNG (so an edited emoji keeps
+    its credit), else ""."""
+    if is_emoji(path):
+        return path
+    from PIL import Image
+    try:
+        with Image.open(os.path.expanduser(path)) as im:
+            return str(im.info.get(SOURCE_KEY, ""))
+    except OSError:
+        return ""
+
+
 def _rgb_image(path, background="#ffffff"):
     import io
     from PIL import Image, ImageColor
@@ -822,7 +839,8 @@ def load_pattern(path, cols, rows, max_colors, background="#ffffff"):
     palette = sorted(counts, key=lambda c: (-counts[c], c))
     index = {c: i for i, c in enumerate(palette)}
     grid = [[index[c] for c in row] for row in cells]
-    return {"palette": palette, "counts": [counts[c] for c in palette], "grid": grid, "note": note}
+    return {"palette": palette, "counts": [counts[c] for c in palette], "grid": grid, "note": note,
+            "source": image_source(path)}
 
 
 def hexcolor(rgb):
@@ -839,7 +857,8 @@ def write_pattern_svg(path, s, pattern, needed):
     cell = min(8.0, 180.0 / cols, 230.0 / rows)
     m = 12.0
     gw, gh = cols * cell, rows * cell
-    legend_h = 8 + 7 * len(pattern["palette"]) + (8 if is_emoji(s.image) else 0)
+    credit = is_emoji(pattern.get("source", ""))
+    legend_h = 8 + 7 * len(pattern["palette"]) + (8 if credit else 0)
     w, h = max(gw + 2 * m, 120), gh + 2 * m + legend_h
     fs = cell * 0.45
     out = [
@@ -878,7 +897,7 @@ def write_pattern_svg(path, s, pattern, needed):
         out.append(f'<rect x="{m}" y="{y - 4.5:.1f}" width="5" height="5" fill="{hexcolor(rgb)}" stroke="#333" stroke-width="0.2"/>')
         out.append(f'<text x="{m + 7}" y="{y - 0.5:.1f}" font-size="3.5">{idx + 1}   {hexcolor(rgb)}   '
                    f'{pattern["counts"][idx]}   {needed[idx]}</text>')
-    if is_emoji(s.image):
+    if credit:
         out.append(f'<text x="{m}" y="{y + 8:.1f}" font-size="2.8" fill="#555">{EMOJI_CREDIT}</text>')
     out.append("</svg>")
     Path(path).write_text("\n".join(out) + "\n")
@@ -928,7 +947,7 @@ def build(s):
         raise ValueError("\n".join(problems))
     pattern = load_pattern(s.image, s.cols, s.rows, s.colors, s.background) if s.image else None
     notes = [pattern["note"]] if pattern else []
-    if is_emoji(s.image):
+    if pattern and is_emoji(pattern["source"]):
         notes.append(EMOJI_CREDIT)
     sheets = []
 
@@ -1042,13 +1061,18 @@ def scaled_image_path(s, out):
 
 def write_scaled_image(path, pattern):
     """One pixel per tile, in the final palette. Editing it and loading it
-    back as the image (same grid size) uses it 1:1."""
+    back as the image (same grid size) uses it 1:1. Records the picture's
+    source in a PNG text chunk, so an edited emoji keeps its credit."""
     from PIL import Image
+    from PIL.PngImagePlugin import PngInfo
 
     grid = pattern["grid"]
     im = Image.new("RGB", (len(grid[0]), len(grid)))
     im.putdata([pattern["palette"][idx] for row in grid for idx in row])
-    im.save(path)
+    info = PngInfo()
+    if pattern.get("source"):
+        info.add_text(SOURCE_KEY, pattern["source"])
+    im.save(path, pnginfo=info)
 
 
 def generate(s):
@@ -1294,7 +1318,9 @@ def run_gui():
                         ttk.Button(box, text="…", width=2, command=browse_image).grid(row=r, column=2)
                         ttk.Button(box, text="Emoji…", command=pick_emoji).grid(row=r, column=3)
                         ttk.Button(box, text="Set grid from image", command=grid_from_image).grid(
-                            row=r + 10, column=0, columnspan=3, sticky="w", pady=(4, 0))
+                            row=r + 10, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                        ttk.Button(box, text="Edit pixels…", command=lambda: edit_pixels()).grid(
+                            row=r + 10, column=2, columnspan=2, sticky="w", pady=(4, 0))
                     elif key == "output_dir":
                         ttk.Button(box, text="…", width=2, command=browse_dir).grid(row=r, column=2)
                     elif key == "background":
@@ -1309,7 +1335,7 @@ def run_gui():
     nav = ttk.Frame(side)
     nav.pack(fill="x")
     sheet_label = tk.StringVar(value="Press Preview to lay out the sheets")
-    state = {"sheets": [], "i": 0, "pattern": None}
+    state = {"sheets": [], "i": 0, "pattern": None, "pending": ""}
     show_picture = tk.BooleanVar(value=False)
 
     def draw():
@@ -1376,6 +1402,8 @@ def run_gui():
         state["after"] = root.after(500, lambda: preview(quiet=True))
 
     def preview(quiet=False):
+        if state.get("after"):  # an immediate preview replaces one still scheduled
+            root.after_cancel(state["after"])
         state["after"] = None
         try:
             s = read_settings()
@@ -1392,7 +1420,8 @@ def run_gui():
         if show_picture.get():
             show_tray_sheet()
         draw()
-        log.set("\n".join(notes))
+        log.set((state["pending"] + "\n\n" if state["pending"] else "") + "\n".join(notes))
+        state["pending"] = ""
 
     def generate_clicked():
         try:
@@ -1408,6 +1437,139 @@ def run_gui():
         last_dir["path"] = files[0].parent
 
     last_dir = {"path": None}
+
+    def edit_pixels():
+        """Pop-out editor: paint tiles with the mosaic's own colors, then save
+        over <picture>_scaled.png and make that the image."""
+        preview(quiet=True)
+        pattern = state["pattern"]
+        if not pattern:
+            messagebox.showinfo("Edit pixels", "Choose an image or an emoji first.")
+            return
+        s = read_settings()
+        palette = pattern["palette"]
+        grid = [row[:] for row in pattern["grid"]]
+        rows, cols = len(grid), len(grid[0])
+        cell = max(4, min(28, 720 // max(cols, rows)))
+        ed = {"color": 0, "stroke": None, "undo": [], "dirty": False}
+
+        win = tk.Toplevel(root)
+        win.title(f"Edit pixels: {cols} x {rows}")
+        win.transient(root)
+        top = ttk.Frame(win, padding=(8, 8, 8, 4))
+        top.pack(fill="x")
+        ttk.Label(top, text="Color").pack(side="left", padx=(0, 6))
+        swatches = []
+        for idx, rgb in enumerate(palette):
+            sw = tk.Canvas(top, width=30, height=30, highlightthickness=3, highlightbackground=win.cget("background"))
+            sw.create_rectangle(2, 2, 29, 29, fill=hexcolor(rgb), outline="#333")
+            sw.create_text(16, 16, text=str(idx + 1), fill=text_color(rgb))
+            sw.bind("<Button-1>", lambda e, i=idx: choose(i))
+            sw.pack(side="left", padx=1)
+            swatches.append(sw)
+
+        canvas = tk.Canvas(win, width=cols * cell, height=rows * cell, highlightthickness=0, background="#777")
+        canvas.pack(padx=8, pady=4)
+        outline = "#777" if cell >= 8 else ""
+        rects = [[canvas.create_rectangle(i * cell, j * cell, (i + 1) * cell, (j + 1) * cell,
+                                          fill=hexcolor(palette[grid[j][i]]), outline=outline)
+                  for i in range(cols)] for j in range(rows)]
+        bottom = ttk.Frame(win, padding=(8, 4, 8, 8))
+        bottom.pack(fill="x")
+        counts = tk.StringVar()
+        ttk.Label(bottom, textvariable=counts).pack(side="left")
+        ttk.Label(win, text="Click or drag to paint. Right-click (or Ctrl-click) a tile to pick its color. "
+                            "Keys 1-9 choose a color; Ctrl/Cmd-Z undoes.",
+                  foreground="#666", padding=(8, 0, 8, 6)).pack(anchor="w")
+
+        def update_counts():
+            n = [0] * len(palette)
+            for row in grid:
+                for idx in row:
+                    n[idx] += 1
+            counts.set("   ".join(f"{i + 1}: {c}" for i, c in enumerate(n)))
+
+        def choose(i):
+            ed["color"] = i
+            for k, sw in enumerate(swatches):
+                sw.configure(highlightbackground="#1e6fd9" if k == i else win.cget("background"))
+
+        def cell_at(e):
+            i, j = e.x // cell, e.y // cell
+            return (i, j) if 0 <= i < cols and 0 <= j < rows else None
+
+        def paint(e):
+            pos = cell_at(e)
+            if not pos or ed["stroke"] is None:
+                return
+            i, j = pos
+            if grid[j][i] != ed["color"]:
+                ed["stroke"].append((j, i, grid[j][i]))
+                grid[j][i] = ed["color"]
+                canvas.itemconfigure(rects[j][i], fill=hexcolor(palette[ed["color"]]))
+                ed["dirty"] = True
+                update_counts()
+
+        def press(e):
+            ed["stroke"] = []
+            paint(e)
+
+        def release(e):
+            if ed["stroke"]:
+                ed["undo"].append(ed["stroke"])
+            ed["stroke"] = None
+
+        def pick(e):
+            pos = cell_at(e)
+            if pos:
+                choose(grid[pos[1]][pos[0]])
+
+        def undo(e=None):
+            if not ed["undo"]:
+                return
+            for j, i, old in reversed(ed["undo"].pop()):
+                grid[j][i] = old
+                canvas.itemconfigure(rects[j][i], fill=hexcolor(palette[old]))
+            update_counts()
+
+        def save():
+            out = Path(os.path.expanduser(s.output_dir))
+            try:
+                out.mkdir(parents=True, exist_ok=True)
+                path = scaled_image_path(s, out)
+                write_scaled_image(path, {"palette": palette, "grid": grid, "source": pattern.get("source", "")})
+            except Exception as e:
+                messagebox.showerror("Edit pixels", str(e), parent=win)
+                return
+            state["pending"] = f"Saved the edited picture to {path}; it is now the image."
+            show_picture.set(True)
+            vars_["image"].set(str(path))  # the setting change refreshes the preview
+            win.destroy()
+
+        def cancel():
+            if ed["dirty"] and not messagebox.askyesno("Edit pixels", "Discard your changes?", parent=win):
+                return
+            win.destroy()
+
+        ttk.Button(bottom, text="Save", command=save).pack(side="right")
+        ttk.Button(bottom, text="Cancel", command=cancel).pack(side="right", padx=6)
+        ttk.Button(bottom, text="Undo", command=undo).pack(side="right")
+        canvas.bind("<ButtonPress-1>", press)
+        canvas.bind("<B1-Motion>", paint)
+        canvas.bind("<ButtonRelease-1>", release)
+        for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):
+            canvas.bind(seq, pick)
+        for seq in ("<Control-z>", "<Command-z>"):
+            try:
+                win.bind(seq, undo)
+            except tk.TclError:
+                pass  # <Command-...> exists only on macOS
+        for k in range(min(9, len(palette))):
+            win.bind(str(k + 1), lambda e, i=k: choose(i))
+        win.protocol("WM_DELETE_WINDOW", cancel)
+        choose(0)
+        update_counts()
+        win.focus_set()
 
     def kerf_test_clicked():
         try:

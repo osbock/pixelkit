@@ -30,6 +30,9 @@ It works like the desktop app, with a few differences:
   are also listed for downloading one at a time.
 - Choose a picture with **Choose image…**, by dropping an image anywhere on the
   page, or with **Emoji…**.
+- **Edit pixels…** opens the same pixel editor as the desktop app. Saving
+  makes the edited picture the image, and it goes in the kit download as
+  `<picture>_scaled.png`.
 - The preview updates as you type. Scroll to zoom, drag to pan, and
   double-click to fit.
 - Settings are kept in the browser, and so is the last picture you chose.
@@ -105,10 +108,14 @@ python3 pixelkit.py
 3. **Set grid from image** detects the grid of upscaled pixel art. For an
    AI-generated 1856 × 2304 px image drawn on a 40 × 50 grid, it sets
    40 × 50.
-4. The preview on the right updates as you change settings, and ◀ ▶ step
+4. **Edit pixels…** opens the mosaic in a pop-out editor. Pick one of the
+   mosaic's colors and click or drag to repaint tiles; right-click a tile to
+   pick up its color. **Save** writes `<picture>_scaled.png` to the output
+   folder and makes it the image.
+5. The preview on the right updates as you change settings, and ◀ ▶ step
    through the sheets. **Show picture** draws the finished picture in the
    tray; it turns on by itself when you choose an image or an emoji.
-5. **Generate SVGs** writes the files to the output folder.
+6. **Generate SVGs** writes the files to the output folder.
 
 The GUI remembers your last settings in `~/.pixelkit.json`.
 
@@ -185,10 +192,12 @@ Each tile takes the most common color in its area, so pixel art stays crisp.
   and enter its real thickness. A tray kerf that fits best above your real
   kerf usually means the stock is thicker than the thickness setting, since
   the extra compensation is making up for tight slots.
-- To fix individual tiles, edit `<picture name>_scaled.png` from the output
-  folder and choose it as the image, keeping the same grid size. It is then
-  used exactly as drawn. The exceptions are colors closer than about 24 RGB
-  steps, which are merged, and a color count over Max colors.
+- To fix individual tiles, use **Edit pixels…**. You can also edit
+  `<picture name>_scaled.png` in any paint program and choose it as the
+  image, keeping the same grid size; it is then used exactly as drawn. The
+  exceptions are colors closer than about 24 RGB steps, which are merged, and
+  a color count over Max colors. An edited emoji keeps its Twemoji credit,
+  because the PNG records its source.
 - Turn on **Tabs between tiles** if cut tiles fall through your laser bed or
   get blown around. Each tile keeps a 0.5 mm bridge to its left and right
   neighbours, at mid-height. The horizontal cuts are left whole, so each row

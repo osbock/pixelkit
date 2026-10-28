@@ -520,7 +520,16 @@ found only by pasting.
 **Image setting:** an emoji is stored as `emoji:<code> <name>`. Only the token
 after `emoji:` up to the first space is significant.
 
-**Credit:** when the picture is an emoji, add
+**Picture source:** a pattern records where its picture came from:
+- `emoji:<code> <name>` for a bundled emoji;
+- for a PNG that pixelkit wrote, the value of its `pixelkit:source` tEXt
+  chunk;
+- otherwise empty.
+
+Scaled PNGs (§10) store this source, so an edited emoji keeps its credit
+after the PNG replaces `emoji:…` as the image.
+
+**Credit:** when the picture's source is an emoji, add
 `Emoji graphics: Twemoji, CC BY 4.0 (Twitter, Inc and other contributors)` to
 the notes, the log and the bottom of the pattern sheet. The README carries
 the same credit.
@@ -557,7 +566,10 @@ All files go in `output_dir`, which is created if needed.
 - **Round trip:** loading this PNG back with the same grid size must
   reproduce the same picture exactly, since it fits 1:1 and its colors are
   already reduced. Edits carry through, apart from merging and the
-  Max colors limit.
+  Max colors limit. (The palette colors are pairwise at least 24 apart, so
+  repainting with them never merges.)
+- **Source chunk:** when the picture has a source, write it as a tEXt chunk
+  with the key `pixelkit:source`. Both versions read and write it.
 
 **Summary text** (shown live in the GUI and at the top of the notes):
 - picture size in tiles and mm;
@@ -623,6 +635,31 @@ preview. Auto-refresh keeps the preview truthful.
 - **Selecting:** click to select. Double-click, Enter or **Use** confirms.
 - **On confirm:** set Image to `emoji:<code> <name>`, set rows = cols (emoji
   are square), turn Show picture on, and log the choice and the credit.
+
+**Pixel editor** (**Edit pixels…**, a pop-out window):
+- **Opens on the current mosaic:** the pattern after scaling, padding and
+  color reduction, at cell size min(28, 720 / larger side) px, minimum 4.
+  Thin cell outlines are drawn at 8 px and up.
+- **Palette:** the mosaic's own colors, as numbered swatches; there are no
+  new colors. Click a swatch, or press 1–9.
+- **Painting:**
+  - click or drag to paint;
+  - right-click (also Ctrl-click, and Alt-click on the web) picks a tile's
+    color;
+  - Undo reverts whole strokes (Ctrl/Cmd-Z works too);
+  - a live count of tiles per color is shown.
+- **Save:**
+  - **Python:** write the grid as `<picture>_scaled.png` (§10 naming, with
+    the source chunk) in the output folder, overwriting it if it's already
+    the image, then set Image to that file.
+  - **Web:** the PNG becomes the in-memory picture and is stored like any
+    chosen picture; it is also the kit download's `_scaled.png`.
+  - **Both:** turn Show picture on, and log what was saved above the
+    rebuilt notes.
+- **Cancel** or closing the window asks before discarding changes.
+- **Immediate previews:** an immediate preview cancels one that is still
+  scheduled. **Why:** otherwise a preview scheduled from earlier typing ran
+  late and overwrote fresher results.
 
 ## 12. Command line
 
