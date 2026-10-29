@@ -9,6 +9,7 @@ import {
   wantedTiles,
 } from "./parts";
 import { composite, loadPattern, type Pattern, type RGBAImage, scaledImage } from "./pattern";
+import { type Board, buildPbn, pbnKeySvg, pbnPreviewSvg, pbnSvg } from "./pbn";
 import { fixed, g } from "./py";
 import { parseColor, type Settings, validate } from "./settings";
 import { hexcolor, patternSvg, sheetSvg } from "./svg";
@@ -47,6 +48,13 @@ export function build(s: Settings, picture: RGBAImage | null, pattern: Pattern |
   const notes: string[] = pattern ? [pattern.note] : [];
   if (needsEmojiCredit(pattern)) notes.push(EMOJI_CREDIT);
   const sheets: SheetOut[] = [];
+
+  if (s.kit_type === "paint_by_number") {
+    if (!pattern) throw new SettingsError("The picture isn't loaded; choose it again.");
+    const r = buildPbn(s, pattern);
+    return { sheets: [{ stem: `${s.name}_pbn`, w: r.w, h: r.h, items: [r.board] }], pattern: r.pattern,
+      needed: r.regions, notes: [...notes, ...r.notes] };
+  }
 
   if (s.tray_style !== "none") {
     const [parts, info] = (s.tray_style === "box" ? makeBox : makeLayered)(s, pattern);
@@ -92,6 +100,14 @@ function tileCount(block: Piece, s: Settings): number {
 }
 
 export function summary(s: Settings): string {
+  if (s.kit_type === "paint_by_number") {
+    const mg = s.pbn_margin;
+    return [
+      `Picture: ${s.cols} x ${s.rows} = ${s.cols * s.rows} cells, ${g(s.cols * s.pixel)} x ${g(s.rows * s.pixel)} mm`,
+      `Paint-by-number board (${s.pbn_use}): ${fixed(s.cols * s.pixel + 2 * mg, 1)} x ` +
+        `${fixed(s.rows * s.pixel + 2 * mg, 1)} mm incl. ${g(mg)} mm margin`,
+    ].join("\n");
+  }
   const [win, hin] = trayInner(s);
   const t = s.tray_thickness;
   const lines = [
@@ -133,17 +149,27 @@ export function scaledImageName(s: Settings): string {
 /** Every output file of a kit, plus the build (for previews and notes). */
 export function generate(s: Settings, picture: RGBAImage | null, pattern: Pattern | null = null): { files: OutFile[]; build: Build } {
   const b = build(s, picture, pattern);
-  const files: OutFile[] = b.sheets.map((sh) => ({ name: `${sh.stem}.svg`, text: sheetSvg(sh.w, sh.h, sh.items) }));
+  const pbn = s.kit_type === "paint_by_number";
+  const files: OutFile[] = [];
+  for (const sh of b.sheets) {
+    if (pbn) {
+      const board = sh.items[0] as Board;
+      files.push({ name: `${sh.stem}.svg`, text: pbnSvg(sh.w, sh.h, board) });
+      files.push({ name: `${sh.stem}_preview.svg`, text: pbnPreviewSvg(sh.w, sh.h, board, b.pattern!) });
+    } else files.push({ name: `${sh.stem}.svg`, text: sheetSvg(sh.w, sh.h, sh.items) });
+  }
   if (b.pattern) {
-    files.push({ name: `${s.name}_pattern.svg`, text: patternSvg(s, b.pattern, b.needed, needsEmojiCredit(b.pattern) ? EMOJI_CREDIT : null) });
+    const credit = needsEmojiCredit(b.pattern) ? EMOJI_CREDIT : null;
+    if (pbn) files.push({ name: `${s.name}_pbn_key.svg`, text: pbnKeySvg(s, b.pattern, b.needed, credit) });
+    else files.push({ name: `${s.name}_pattern.svg`, text: patternSvg(s, b.pattern, b.needed, credit) });
     const name = scaledImageName(s);
     files.push({ name, image: scaledImage(b.pattern) });
     b.notes.push(`Scaled image for editing: ${name} (${s.cols} x ${s.rows} px, one pixel per tile)`);
   }
-  const text = [summary(s), "", ...b.notes, "",
+  const text = [summary(s), "", ...b.notes, ...(pbn ? [] : ["",
     "Red = cut, blue = engrave/score. Units are mm.",
-    "Run engrave layers before cut layers."];
-  if (s.engrave_numbers) {
+    "Run engrave layers before cut layers."])];
+  if (s.engrave_numbers && !pbn) {
     text.push("Base numbers are SVG <text>; convert to paths in your laser software if it does not import text.");
   }
   files.push({ name: `${s.name}_notes.txt`, text: text.join("\n") + "\n\nSettings:\n" + JSON.stringify(s, null, 2) + "\n" });

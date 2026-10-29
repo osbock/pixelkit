@@ -43,11 +43,14 @@ STROKE = 0.1
 SETTINGS_FILE = Path.home() / ".pixelkit.json"
 TRAY_STYLES = ["box", "layered", "none"]
 TILE_SHEETS = ["combined", "per_color"]
-CHOICES = {"tray_style": TRAY_STYLES, "tile_sheets": TILE_SHEETS}
+KIT_TYPES = ["mosaic", "paint_by_number"]
+PBN_USES = ["engrave", "print"]
+CHOICES = {"kit_type": KIT_TYPES, "tray_style": TRAY_STYLES, "tile_sheets": TILE_SHEETS, "pbn_use": PBN_USES}
 
 
 @dataclass
 class Settings:
+    kit_type: str = "mosaic"       # mosaic (tray + tiles) | paint_by_number (one numbered board)
     cols: int = 20
     rows: int = 25
     pixel: float = 10.0            # finished tile size, mm
@@ -74,6 +77,13 @@ class Settings:
     image: str = ""                # image file, or "emoji:<code> <name>" from the bundled set
     background: str = "#ffffff"    # color behind transparent parts of the image
     colors: int = 8
+    pbn_use: str = "engrave"       # paint by number: engrave (laser layers + cut line) | print
+    pbn_min_region: int = 4        # regions smaller than this many cells merge into a neighbour
+    pbn_smooth: bool = True        # round off pixel steps in the outlines
+    pbn_margin: float = 10.0       # board border around the picture, mm
+    pbn_line_width: float = 0.3    # outline width when printing, mm
+    pbn_text_min: float = 2.0      # smallest number, mm
+    pbn_text_max: float = 6.0      # largest number, mm
     output_dir: str = "~/pixelkit_output"
     name: str = "pixelart"
 
@@ -904,6 +914,436 @@ def write_pattern_svg(path, s, pattern, needed):
 
 
 # --------------------------------------------------------------------------
+# Paint by number
+# --------------------------------------------------------------------------
+
+PBN_LINE = "#0000ff"         # region outlines (LightBurn layer 01)
+PBN_NUMBER = "#00e000"       # numbers (LightBurn layer 03), a separate layer
+PBN_PRINT_LINE = "#000000"
+PBN_PRINT_NUMBER = "#555555"
+
+_N4 = ((0, -1), (0, 1), (-1, 0), (1, 0))  # (di, dj): up, down, left, right
+_N8 = ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1))
+
+
+def label_regions(grid):
+    """4-connected same-color regions. Returns (labels, sizes): labels[j][i]
+    is a region id, ids numbered in row-major discovery order."""
+    rows, cols = len(grid), len(grid[0])
+    lab = [[-1] * cols for _ in range(rows)]
+    sizes = []
+    for j in range(rows):
+        for i in range(cols):
+            if lab[j][i] >= 0:
+                continue
+            rid, color = len(sizes), grid[j][i]
+            lab[j][i] = rid
+            queue, k = [(i, j)], 0
+            while k < len(queue):
+                ci, cj = queue[k]
+                k += 1
+                for di, dj in _N4:
+                    ni, nj = ci + di, cj + dj
+                    if 0 <= ni < cols and 0 <= nj < rows and lab[nj][ni] < 0 and grid[nj][ni] == color:
+                        lab[nj][ni] = rid
+                        queue.append((ni, nj))
+            sizes.append(len(queue))
+    return lab, sizes
+
+
+def merge_small_regions(grid, min_size):
+    """Repaint regions smaller than min_size cells with the color of the
+    neighbour they share the longest border with (ties: larger region, then
+    lower id), smallest first. Returns (new grid, number of regions merged)."""
+    import heapq
+
+    rows, cols = len(grid), len(grid[0])
+    lab, sizes = label_regions(grid)
+    colors = [0] * len(sizes)
+    cells = [[] for _ in sizes]
+    for j in range(rows):
+        for i in range(cols):
+            colors[lab[j][i]] = grid[j][i]
+            cells[lab[j][i]].append((i, j))
+    alive = [True] * len(sizes)
+    heap = [(n, rid) for rid, n in enumerate(sizes)]
+    heapq.heapify(heap)
+    merged = 0
+    while heap:
+        n, rid = heapq.heappop(heap)
+        if not alive[rid] or n != sizes[rid]:
+            continue  # stale entry
+        if n >= min_size:
+            break
+        border = {}
+        for i, j in cells[rid]:
+            for di, dj in _N4:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < cols and 0 <= nj < rows and lab[nj][ni] != rid:
+                    border[lab[nj][ni]] = border.get(lab[nj][ni], 0) + 1
+        if not border:
+            continue  # the whole picture is one region
+        target = max(border, key=lambda t: (border[t], sizes[t], -t))
+        for i, j in cells[rid]:
+            lab[j][i] = target
+        cells[target] += cells[rid]
+        sizes[target] += sizes[rid]
+        alive[rid] = False
+        merged += 1
+        heapq.heappush(heap, (sizes[target], target))
+    return [[colors[lab[j][i]] for i in range(cols)] for j in range(rows)], merged
+
+
+def outline_chains(grid):
+    """Region boundaries as polylines in grid units, each shared border once.
+    Chains run between junctions (vertices where the boundary branches, plus
+    the picture's four corners); boundaries with no junction are closed
+    loops. Returns [(points, closed)]."""
+    rows, cols = len(grid), len(grid[0])
+
+    def h_edge(x, y):  # (x, y)-(x+1, y)
+        return 0 <= x < cols and (y == 0 or y == rows or (0 < y < rows and grid[y - 1][x] != grid[y][x]))
+
+    def v_edge(x, y):  # (x, y)-(x, y+1)
+        return 0 <= y < rows and (x == 0 or x == cols or (0 < x < cols and grid[y][x - 1] != grid[y][x]))
+
+    def links(x, y):  # incident edges in fixed order: right, down, left, up
+        out = []
+        if h_edge(x, y):
+            out.append((("h", x, y), (x + 1, y)))
+        if v_edge(x, y):
+            out.append((("v", x, y), (x, y + 1)))
+        if h_edge(x - 1, y):
+            out.append((("h", x - 1, y), (x - 1, y)))
+        if v_edge(x, y - 1):
+            out.append((("v", x, y - 1), (x, y - 1)))
+        return out
+
+    corners = {(0, 0), (cols, 0), (0, rows), (cols, rows)}
+
+    def junction(x, y):
+        return (x, y) in corners or len(links(x, y)) not in (0, 2)
+
+    seen = set()
+    chains = []
+
+    def walk(start, edge, nxt):
+        pts = [start]
+        seen.add(edge)
+        cur = nxt
+        while True:
+            pts.append(cur)
+            if junction(*cur) or cur == start:
+                return pts
+            follow = [(e, n) for e, n in links(*cur) if e not in seen]
+            if not follow:
+                return pts
+            e, n = follow[0]
+            seen.add(e)
+            cur = n
+
+    for y in range(rows + 1):
+        for x in range(cols + 1):
+            if junction(x, y):
+                for e, n in links(x, y):
+                    if e not in seen:
+                        chains.append((walk((x, y), e, n), False))
+    for y in range(rows + 1):
+        for x in range(cols + 1):
+            for e, n in links(x, y):
+                if e not in seen:
+                    pts = walk((x, y), e, n)
+                    chains.append((pts[:-1], True))  # last point repeats the start
+    return chains
+
+
+def smooth_chain(pts, closed, passes=2):
+    """Round off pixel steps: take edge midpoints, then Chaikin corner
+    cutting. Open chains keep their end points (junctions stay put, so
+    neighbouring chains still meet)."""
+    if closed:
+        q = [((pts[k][0] + pts[(k + 1) % len(pts)][0]) / 2, (pts[k][1] + pts[(k + 1) % len(pts)][1]) / 2)
+             for k in range(len(pts))]
+    else:
+        if len(pts) < 3:
+            return [(float(x), float(y)) for x, y in pts]
+        q = ([(float(pts[0][0]), float(pts[0][1]))]
+             + [((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) for a, b in zip(pts, pts[1:])]
+             + [(float(pts[-1][0]), float(pts[-1][1]))])
+    for _ in range(passes):
+        r = [] if closed else [q[0]]
+        n = len(q) if closed else len(q) - 1
+        for k in range(n):
+            a, b = q[k], q[(k + 1) % len(q)]
+            r.append((0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1]))
+            r.append((0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1]))
+        if not closed:
+            r.append(q[-1])
+        q = r
+    return q
+
+
+def _collinear(a, b, c):
+    return abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) < 1e-9
+
+
+def drop_collinear(pts, closed):
+    """Remove points lying on the straight line through their neighbours
+    (one pass, comparing against the last point kept)."""
+    if closed:
+        n = len(pts)
+        start = next((k for k in range(n) if not _collinear(pts[k - 1], pts[k], pts[(k + 1) % n])), None)
+        if start is None:
+            return list(pts)
+        ring = pts[start:] + pts[:start] + [pts[start]]
+        return drop_collinear(ring, False)[:-1]
+    if len(pts) < 3:
+        return list(pts)
+    out = [pts[0]]
+    for k in range(1, len(pts) - 1):
+        if not _collinear(out[-1], pts[k], pts[k + 1]):
+            out.append(pts[k])
+    out.append(pts[-1])
+    return out
+
+
+def chain_sides(chain, labels):
+    """Region ids on the two sides of a chain's first edge (-1 off the grid):
+    side A lies along the normal (dy, -dx) of travel, side B opposite."""
+    rows, cols = len(labels), len(labels[0])
+    (x0, y0), (x1, y1) = chain[0], chain[1]
+    dx, dy = x1 - x0, y1 - y0
+    mx, my = x0 + dx / 2, y0 + dy / 2
+
+    def region(px, py):
+        i, j = math.floor(px), math.floor(py)
+        return labels[j][i] if 0 <= i < cols and 0 <= j < rows else -1
+
+    return region(mx + dy / 2, my - dx / 2), region(mx - dy / 2, my + dx / 2)
+
+
+def region_loops(chains, sides, nregions):
+    """Closed outlines for each region, built from the (smoothed) chains so
+    fills meet the drawn lines exactly. Returns {region: [loop, ...]}."""
+    pieces = defaultdict(list)  # region -> [points], each oriented with the region on side A
+    for (pts, closed), (a, b) in zip(chains, sides):
+        ring = pts + [pts[0]] if closed else pts
+        if a >= 0:
+            pieces[a].append(list(ring))
+        if b >= 0:
+            pieces[b].append(list(reversed(ring)))
+    loops = {}
+    for rid in range(nregions):
+        todo = pieces.get(rid, [])
+        used = [False] * len(todo)
+        out = []
+        for k in range(len(todo)):
+            if used[k]:
+                continue
+            used[k] = True
+            loop = list(todo[k])
+            while loop[-1] != loop[0]:
+                nxt = next((m for m in range(len(todo)) if not used[m] and todo[m][0] == loop[-1]), None)
+                if nxt is None:
+                    break
+                used[nxt] = True
+                loop += todo[nxt][1:]
+            out.append(loop[:-1] if loop[-1] == loop[0] else loop)
+        loops[rid] = out
+    return loops
+
+
+def number_spots(grid):
+    """One label spot per region: the cell farthest from the region's edge
+    (8-neighbour steps), ties broken by nearness to the region's centroid,
+    then row-major order. Returns [(i, j, depth, color)] in region order."""
+    rows, cols = len(grid), len(grid[0])
+    lab, sizes = label_regions(grid)
+    depth = [[0] * cols for _ in range(rows)]
+    queue = []
+    for j in range(rows):
+        for i in range(cols):
+            for di, dj in _N8:
+                ni, nj = i + di, j + dj
+                if not (0 <= ni < cols and 0 <= nj < rows) or lab[nj][ni] != lab[j][i]:
+                    depth[j][i] = 1
+                    queue.append((i, j))
+                    break
+    k = 0
+    while k < len(queue):
+        i, j = queue[k]
+        k += 1
+        for di, dj in _N8:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < cols and 0 <= nj < rows and depth[nj][ni] == 0:
+                depth[nj][ni] = depth[j][i] + 1
+                queue.append((ni, nj))
+    sx = [0.0] * len(sizes)
+    sy = [0.0] * len(sizes)
+    for j in range(rows):
+        for i in range(cols):
+            sx[lab[j][i]] += i + 0.5
+            sy[lab[j][i]] += j + 0.5
+    best = [None] * len(sizes)
+    for j in range(rows):
+        for i in range(cols):
+            rid = lab[j][i]
+            cx, cy = sx[rid] / sizes[rid], sy[rid] / sizes[rid]
+            dx, dy = i + 0.5 - cx, j + 0.5 - cy
+            key = (depth[j][i], -(dx * dx + dy * dy))
+            if best[rid] is None or key > best[rid][0]:
+                best[rid] = (key, i, j)
+    return [(i, j, key[0], grid[j][i]) for key, i, j in best]
+
+
+def build_pbn(s, pattern):
+    """Paint-by-number board from a pattern. Returns (board piece, width,
+    height, merged pattern, regions per color, notes)."""
+    grid, merged = merge_small_regions(pattern["grid"], max(1, s.pbn_min_region))
+    # Renumber colors by tile count, as for mosaics (merging changes counts).
+    counts = defaultdict(int)
+    for row in grid:
+        for idx in row:
+            counts[idx] += 1
+    order = sorted(counts, key=lambda idx: (-counts[idx], pattern["palette"][idx]))
+    renum = {old: new for new, old in enumerate(order)}
+    grid = [[renum[idx] for idx in row] for row in grid]
+    merged_pattern = {**pattern, "palette": [pattern["palette"][i] for i in order],
+                      "counts": [counts[i] for i in order], "grid": grid}
+
+    rows, cols = len(grid), len(grid[0])
+    p, mg = s.pixel, s.pbn_margin
+    w, h = cols * p + 2 * mg, rows * p + 2 * mg
+    engrave = s.pbn_use == "engrave"
+    board = Piece("paint_by_number")
+    board.line_color = PBN_LINE if engrave else PBN_PRINT_LINE
+    board.text_color = PBN_NUMBER if engrave else PBN_PRINT_NUMBER
+    board.line_width = STROKE if engrave else s.pbn_line_width
+    board.picture = [(mg, mg), (mg + cols * p, mg), (mg, mg + rows * p)]
+    labels, sizes = label_regions(grid)
+    chains = outline_chains(grid)
+    sides = [chain_sides(pts, labels) for pts, _ in chains]
+    shaped = []
+    for pts, closed in chains:
+        if s.pbn_smooth:
+            pts = smooth_chain(pts, closed)
+        shaped.append((drop_collinear(pts, closed), closed))
+    to_mm = lambda pts: [(mg + x * p, mg + y * p) for x, y in pts]
+    board.engraves = [(to_mm(pts), closed) for pts, closed in shaped]
+    # Fills for the color preview: each color's region outlines as one path.
+    region_color = [0] * len(sizes)
+    for j in range(rows):
+        for i in range(cols):
+            region_color[labels[j][i]] = grid[j][i]
+    board.fills = [[] for _ in order]
+    for rid, loops in region_loops(shaped, sides, len(sizes)).items():
+        board.fills[region_color[rid]] += [to_mm(loop) for loop in loops]
+
+    regions = [0] * len(order)
+    tight = 0
+    for i, j, d, idx in number_spots(grid):
+        regions[idx] += 1
+        text = str(idx + 1)
+        room = (2 * d - 1) * p
+        size = min(s.pbn_text_max, 0.8 * room, 0.8 * room / (0.6 * len(text)))
+        if size < s.pbn_text_min:
+            size = s.pbn_text_min
+            tight += 1
+        cx, cy = mg + (i + 0.5) * p, mg + (j + 0.5) * p
+        board.texts.append((cx, cy + size * 0.35, size, text, 0.0, "middle"))
+    if engrave:
+        board.cuts.append((rect_pts(0, 0, w, h), True))
+
+    notes = [
+        f"Paint by number: {cols} x {rows} cells at {s.pixel:g} mm, board {w:.0f} x {h:.0f} mm "
+        f"({s.pbn_use}); {sum(regions)} regions in {len(order)} colors"
+        + (f", {merged} region(s) under {s.pbn_min_region} cells merged into a neighbour" if merged else ""),
+    ]
+    if tight:
+        notes.append(f"{tight} region(s) are too small for a {s.pbn_text_min:g} mm number; "
+                     "their numbers overlap the outlines. Raise Min region or use more cells.")
+    if engrave:
+        notes.append(f"Layers: {PBN_LINE} = region outlines, {PBN_NUMBER} = numbers, {CUT} = board cut line.")
+    else:
+        notes.append(f"Print: outlines {PBN_PRINT_LINE} at {s.pbn_line_width:g} mm, numbers {PBN_PRINT_NUMBER}.")
+    if w > s.sheet_width or h > s.sheet_height:
+        notes.append(f"WARNING: the {w:.0f} x {h:.0f} mm board is larger than the {s.sheet_width:g} x "
+                     f"{s.sheet_height:g} mm sheet.")
+    return board, w, h, merged_pattern, regions, notes
+
+
+def pbn_svg(w, h, board):
+    """Board SVG: outlines, numbers and (engrave) cut line in separate groups
+    and colors, so each can get its own laser settings."""
+    print_style = board.line_color != PBN_LINE
+    cap = ' stroke-linejoin="round" stroke-linecap="round"' if print_style else ""
+    out = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3f}mm" height="{h:.3f}mm" '
+        f'viewBox="0 0 {w:.3f} {h:.3f}">',
+        f'  <g id="outlines" fill="none" stroke="{board.line_color}" stroke-width="{board.line_width:g}"{cap}>',
+    ]
+    out += [f'    <path d="{_d(pts, closed)}"/>' for pts, closed in board.engraves]
+    out.append("  </g>")
+    out.append(f'  <g id="numbers" fill="{board.text_color}" font-family="Arial, Helvetica, sans-serif" '
+               'text-anchor="middle">')
+    out += [f'    <text x="{x:.3f}" y="{y:.3f}" font-size="{size:.3f}">{text}</text>'
+            for x, y, size, text, _, _ in board.texts]
+    out.append("  </g>")
+    if board.cuts:
+        out.append(f'  <g id="cut" fill="none" stroke="{CUT}" stroke-width="{STROKE}">')
+        out += [f'    <path d="{_d(pts, closed)}"/>' for pts, closed in board.cuts]
+        out.append("  </g>")
+    out.append("</svg>")
+    return "\n".join(out) + "\n"
+
+
+def pbn_preview_svg(w, h, board, pattern):
+    """The finished picture in color, with the outlines, for approval."""
+    out = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3f}mm" height="{h:.3f}mm" '
+        f'viewBox="0 0 {w:.3f} {h:.3f}">',
+        f'  <rect width="{w:.3f}" height="{h:.3f}" fill="#ffffff"/>',
+    ]
+    for idx, loops in enumerate(board.fills):  # one even-odd path per color
+        if loops:
+            d = " ".join(_d(loop, True) for loop in loops)
+            out.append(f'  <path d="{d}" fill="{hexcolor(pattern["palette"][idx])}" fill-rule="evenodd"/>')
+    out.append('  <g fill="none" stroke="#333333" stroke-width="0.15">')
+    out += [f'    <path d="{_d(pts, closed)}"/>' for pts, closed in board.engraves]
+    out.append("  </g>")
+    out.append("</svg>")
+    return "\n".join(out) + "\n"
+
+
+def pbn_key_svg(s, pattern, regions, credit):
+    """Color key: swatch, number, hex, regions and cells per color."""
+    n = len(pattern["palette"])
+    w, h = 120.0, 20.0 + 9.0 * n + (8.0 if credit else 0.0)
+    out = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.1f}mm" height="{h:.1f}mm" viewBox="0 0 {w:.1f} {h:.1f}" '
+        'font-family="Arial, Helvetica, sans-serif">',
+        f'<rect width="{w:.1f}" height="{h:.1f}" fill="#ffffff"/>',
+        f'<text x="10.0" y="10.0" font-size="5">{s.name}: paint by number key</text>',
+    ]
+    y = 14.0
+    for idx, rgb in enumerate(pattern["palette"]):
+        out.append(f'<rect x="10.0" y="{y:.1f}" width="7" height="7" fill="{hexcolor(rgb)}" '
+                   'stroke="#333" stroke-width="0.2"/>')
+        out.append(f'<text x="13.5" y="{y + 5.0:.1f}" font-size="4" text-anchor="middle" '
+                   f'fill="{text_color(rgb)}">{idx + 1}</text>')
+        out.append(f'<text x="21.0" y="{y + 5.0:.1f}" font-size="3.5">{hexcolor(rgb)}   '
+                   f'{regions[idx]} region(s), {pattern["counts"][idx]} cells</text>')
+        y += 9.0
+    if credit:
+        out.append(f'<text x="10.0" y="{y + 4.0:.1f}" font-size="2.8" fill="#555">{EMOJI_CREDIT}</text>')
+    out.append("</svg>")
+    return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------------------
 # Kit generation
 # --------------------------------------------------------------------------
 
@@ -934,6 +1374,15 @@ def validate(s):
         problems.append(f"Background {s.background!r} is not a color (use e.g. #1e8cdc).")
     except ImportError:
         pass
+    if s.kit_type == "paint_by_number":
+        if not s.image:
+            problems.append("Paint by number needs a picture.")
+        if s.pbn_min_region < 1:
+            problems.append("Min region must be at least 1 cell.")
+        if not 0 < s.pbn_text_min <= s.pbn_text_max:
+            problems.append("Number sizes must be positive, with the minimum no larger than the maximum.")
+        if s.pbn_line_width <= 0 or s.pbn_margin < 0:
+            problems.append("Line width must be positive and the board margin not negative.")
     if s.engrave_numbers and not s.image:
         problems.append("Engraving color numbers needs a pattern image.")
     return problems
@@ -950,6 +1399,10 @@ def build(s):
     if pattern and is_emoji(pattern["source"]):
         notes.append(EMOJI_CREDIT)
     sheets = []
+
+    if s.kit_type == "paint_by_number":
+        board, w, h, pattern, regions, pbn_notes = build_pbn(s, pattern)
+        return [(f"{s.name}_pbn", w, h, [board])], pattern, regions, notes + pbn_notes
 
     if s.tray_style != "none":
         parts, info = (make_box if s.tray_style == "box" else make_layered)(s, pattern)
@@ -999,6 +1452,14 @@ def _tile_count(block, s):
 
 
 def summary(s):
+    if s.kit_type == "paint_by_number":
+        mg = s.pbn_margin
+        return "\n".join([
+            f"Picture: {s.cols} x {s.rows} = {s.cols * s.rows} cells, "
+            f"{s.cols * s.pixel:g} x {s.rows * s.pixel:g} mm",
+            f"Paint-by-number board ({s.pbn_use}): {s.cols * s.pixel + 2 * mg:.1f} x "
+            f"{s.rows * s.pixel + 2 * mg:.1f} mm incl. {mg:g} mm margin",
+        ])
     win, hin = tray_inner(s)
     t = s.tray_thickness
     lines = [
@@ -1081,13 +1542,24 @@ def generate(s):
     out = Path(os.path.expanduser(s.output_dir))
     out.mkdir(parents=True, exist_ok=True)
     files = []
+    pbn = s.kit_type == "paint_by_number"
     for stem, w, h, items in sheets:
         path = out / f"{stem}.svg"
-        write_svg(path, w, h, items)
+        if pbn:
+            path.write_text(pbn_svg(w, h, items[0]))
+            files.append(path)
+            path = out / f"{stem}_preview.svg"
+            path.write_text(pbn_preview_svg(w, h, items[0], pattern))
+        else:
+            write_svg(path, w, h, items)
         files.append(path)
     if pattern:
-        path = out / f"{s.name}_pattern.svg"
-        write_pattern_svg(path, s, pattern, needed)
+        if pbn:
+            path = out / f"{s.name}_pbn_key.svg"
+            path.write_text(pbn_key_svg(s, pattern, needed, is_emoji(pattern.get("source", ""))))
+        else:
+            path = out / f"{s.name}_pattern.svg"
+            write_pattern_svg(path, s, pattern, needed)
         files.append(path)
         path = scaled_image_path(s, out)
         source = None if is_emoji(s.image) else Path(os.path.expanduser(s.image)).resolve()
@@ -1097,12 +1569,12 @@ def generate(s):
             write_scaled_image(path, pattern)
             files.append(path)
             notes.append(f"Scaled image for editing: {path.name} ({s.cols} x {s.rows} px, one pixel per tile)")
-    text = [summary(s), ""] + notes + [
+    text = [summary(s), ""] + notes + ([] if pbn else [
         "",
         "Red = cut, blue = engrave/score. Units are mm.",
         "Run engrave layers before cut layers.",
-    ]
-    if s.engrave_numbers:
+    ])
+    if s.engrave_numbers and not pbn:
         text.append("Base numbers are SVG <text>; convert to paths in your laser software if it does not import text.")
     path = out / f"{s.name}_notes.txt"
     path.write_text("\n".join(text) + "\n\nSettings:\n" + json.dumps(asdict(s), indent=2) + "\n")
@@ -1115,6 +1587,7 @@ def generate(s):
 # --------------------------------------------------------------------------
 
 FORM = [
+    ("Kit", [("kit_type", "Kit type")]),
     ("Grid", [("cols", "Columns"), ("rows", "Rows"), ("pixel", "Pixel size (mm)")]),
     ("Material", [("tile_thickness", "Tile thickness (mm)"), ("tray_thickness", "Tray thickness (mm)"),
                   ("kerf", "Tray kerf (mm)"), ("tile_kerf", "Tile kerf (mm)")]),
@@ -1127,8 +1600,18 @@ FORM = [
                 ("spare_percent", "Spare tiles (%)"), ("tile_sheets", "Tile sheets"),
                 ("tile_tabs", "Tabs between tiles"), ("tab_width", "Tab width (mm)")]),
     ("Pattern (optional)", [("image", "Image"), ("background", "Background"), ("colors", "Max colors")]),
+    ("Paint by number", [("pbn_use", "Board use"), ("pbn_min_region", "Min region (cells)"),
+                         ("pbn_smooth", "Smooth outlines"), ("pbn_margin", "Board margin (mm)"),
+                         ("pbn_line_width", "Print line width (mm)"), ("pbn_text_min", "Min number (mm)"),
+                         ("pbn_text_max", "Max number (mm)")]),
     ("Output", [("output_dir", "Folder"), ("name", "Name prefix")]),
 ]
+FORM_COLUMNS = (FORM[:4], FORM[4:])
+# Settings that only one kind of kit uses; the GUIs grey out (or hide) the others.
+MOSAIC_ONLY = {"tile_thickness", "tray_thickness", "kerf", "tile_kerf", "tray_style", "tile_clearance", "lip",
+               "finger_width", "joint_play", "frame_width", "engrave_grid", "engrave_numbers", "spacing",
+               "tile_border", "spare_percent", "tile_sheets", "tile_tabs", "tab_width"}
+PBN_ONLY = {f.name for f in fields(Settings) if f.name.startswith("pbn_")}
 
 
 def load_saved():
@@ -1294,7 +1777,9 @@ def run_gui():
         if p:
             vars_["output_dir"].set(p)
 
-    for col_idx, sections in enumerate((FORM[:3], FORM[3:])):
+    rows_of = defaultdict(list)  # setting -> its widgets, for greying out
+
+    for col_idx, sections in enumerate(FORM_COLUMNS):
         column = ttk.Frame(form)
         column.grid(row=0, column=col_idx, sticky="n", padx=4)
         for title, items in sections:
@@ -1304,16 +1789,21 @@ def run_gui():
                 val = getattr(defaults, key)
                 if types[key] is bool:
                     var = tk.BooleanVar(value=val)
-                    ttk.Checkbutton(box, text=label, variable=var).grid(row=r, column=0, columnspan=3, sticky="w")
+                    w = ttk.Checkbutton(box, text=label, variable=var)
+                    w.grid(row=r, column=0, columnspan=3, sticky="w")
+                    rows_of[key].append(w)
                 else:
                     var = tk.StringVar(value=str(val))
-                    ttk.Label(box, text=label).grid(row=r, column=0, sticky="w")
+                    lab = ttk.Label(box, text=label)
+                    lab.grid(row=r, column=0, sticky="w")
                     if key in CHOICES:
-                        ttk.Combobox(box, textvariable=var, values=CHOICES[key], state="readonly",
-                                     width=9).grid(row=r, column=1, sticky="w")
+                        w = ttk.Combobox(box, textvariable=var, values=CHOICES[key], state="readonly",
+                                         width=14 if key == "kit_type" else 9)
                     else:
                         width = 22 if key in ("image", "output_dir") else 9
-                        ttk.Entry(box, textvariable=var, width=width).grid(row=r, column=1, sticky="w")
+                        w = ttk.Entry(box, textvariable=var, width=width)
+                    w.grid(row=r, column=1, sticky="w")
+                    rows_of[key] += [lab, w]
                     if key == "image":
                         ttk.Button(box, text="…", width=2, command=browse_image).grid(row=r, column=2)
                         ttk.Button(box, text="Emoji…", command=pick_emoji).grid(row=r, column=3)
@@ -1361,13 +1851,16 @@ def run_gui():
                         quad = [(cx, cy), (cx + ux, cy + uy), (cx + ux + vx, cy + uy + vy), (cx + vx, cy + vy)]
                         canvas.create_polygon(*[c for x, y in quad for c in (ox + x * k, oy + y * k)],
                                               fill=hexcolor(pattern["palette"][idx]), outline="")
-            for color, polys in (("#2b4fd6", pc.engraves), ("#d62b2b", pc.cuts)):
+            line = "#2b4fd6" if getattr(pc, "line_color", ENGRAVE) == ENGRAVE else "#222222"
+            for color, polys in ((line, pc.engraves), ("#d62b2b", pc.cuts)):
                 for pts, closed in polys:
                     flat = [c for x, y in (pts + pts[:1] if closed else pts) for c in (ox + x * k, oy + y * k)]
                     canvas.create_line(*flat, fill=color)
-            if k * (pc.texts[0][2] if pc.texts else 0) >= 6:
-                for x, y, size, text, ang, _ in pc.texts:
-                    canvas.create_text(ox + x * k, oy + y * k, text=text, fill="#2b4fd6", anchor="s",
+            for x, y, size, text, ang, _ in pc.texts:
+                if size * k >= 5:  # skip numbers too small to read at this zoom
+                    canvas.create_text(ox + x * k, oy + y * k, text=text, anchor="s",
+                                       fill={PBN_NUMBER: "#109a10", PBN_PRINT_NUMBER: "#555555"}.get(
+                                           getattr(pc, "text_color", ""), "#2b4fd6"),
                                        angle=-ang, font=("TkDefaultFont", max(6, int(size * k * 0.8))))
 
     def show_tray_sheet():
@@ -1608,6 +2101,15 @@ def run_gui():
     ttk.Button(buttons, text="Kerf test", command=kerf_test_clicked).pack(side="left", padx=6)
     ttk.Button(buttons, text="Open folder", command=open_folder).pack(side="left")
 
+    def update_enabled(*_):
+        pbn = vars_["kit_type"].get() == "paint_by_number"
+        for key, widgets in rows_of.items():
+            off = (pbn and key in MOSAIC_ONLY) or (not pbn and key in PBN_ONLY)
+            for w in widgets:
+                w.state(["disabled"] if off else ["!disabled"])
+
+    vars_["kit_type"].trace_add("write", update_enabled)
+    update_enabled()
     for v in vars_.values():
         v.trace_add("write", refresh_info)
     canvas.bind("<Configure>", lambda e: draw())

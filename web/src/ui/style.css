@@ -25,6 +25,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--bg);
@@ -84,6 +85,7 @@ fieldset {
 legend { font-weight: 600; padding: 0 4px; }
 .field { display: grid; grid-template-columns: 1fr 96px; align-items: center; gap: 8px; margin-top: 6px; }
 .field label { color: var(--ink); }
+.field.wide { grid-template-columns: 1fr 160px; }
 .field input[type="number"], .field input[type="text"], .field select {
   width: 100%;
   padding: 4px 6px;
@@ -126,6 +128,7 @@ legend { font-weight: 600; padding: 0 4px; }
 .preview path { vector-effect: non-scaling-stroke; stroke-width: 1px; }
 /* With the picture shown, fade the engraved grid so the colors read true. */
 .preview.picture path[stroke="#0000ff"] { stroke-opacity: 0.25; }
+.preview.picture g#outlines { stroke-opacity: 0.45; }
 .nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .sheet-label { color: var(--muted); flex: 1; min-width: 140px; }
 .log { white-space: pre-wrap; min-height: 2.8em; color: var(--ink); }

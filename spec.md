@@ -103,6 +103,13 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `image` | str | "" | Image path, or `emoji:<code> <name>` (§9) |
 | `background` | str | `#ffffff` | Color composited behind transparent image areas |
 | `colors` | int | 8 | Maximum number of colors |
+| `kit_type` | choice | `mosaic` | `mosaic` (tray + tiles) or `paint_by_number` (§15) |
+| `pbn_use` | choice | `engrave` | Paint by number: `engrave` or `print` |
+| `pbn_min_region` | int | 4 | Regions smaller than this (cells) merge into a neighbour |
+| `pbn_smooth` | bool | true | Smooth the outlines' pixel steps |
+| `pbn_margin` | float | 10.0 | Board border around the picture |
+| `pbn_line_width` | float | 0.3 | Outline width when printing |
+| `pbn_text_min`, `pbn_text_max` | float | 2.0, 6.0 | Number size limits |
 | `output_dir` | str | `~/pixelkit_output` | Output folder (`~` expanded) |
 | `name` | str | `pixelart` | Prefix for output file names |
 
@@ -762,3 +769,108 @@ A reimplementation should pass these checks.
     when the base is rotated 90°.
 11. **Grid limit:** a 1856 × 2304 grid is rejected by validation rather than
     hanging the program.
+
+## 15. Paint by number
+
+With `kit_type = paint_by_number`, pixelkit makes one numbered board instead
+of a tray and tiles. The picture is processed exactly as for a mosaic (§9),
+then:
+
+1. **Regions:** 4-connected cells of one color, labelled in row-major
+   discovery order. The flood fill visits up, down, left, right.
+2. **Small-region merging:**
+   - **What merges:** every region smaller than `pbn_min_region` cells is
+     repainted with the color of the neighbouring region it shares the most
+     cell edges with.
+   - **Ties:** the larger neighbour wins, then the lower id.
+   - **Order:** a min-heap on (size, id) processes regions smallest first,
+     skipping stale entries. A merged region joins its target, whose size
+     grows.
+   - **Why:** single-cell specks can't be painted or numbered.
+3. **Renumbering:** colors are renumbered by cell count (descending, then
+   RGB), as for mosaics, because merging changes the counts. Colors left with
+   no cells are dropped.
+4. **Outline chains:**
+   - **Edges:** a cell edge is a boundary edge where the colors on its two
+     sides differ, or on the picture border.
+   - **Junctions:** grid vertices with 1, 3 or 4 boundary edges, plus the four
+     picture corners.
+   - **Chains:** each chain runs from a junction to a junction, visiting
+     junctions row-major and directions in the order right, down, left, up.
+     Leftover edges form closed loops, each starting at its first vertex in
+     row-major order.
+   - **Result:** every boundary edge is in exactly one chain, so shared
+     borders are drawn once.
+5. **Smoothing** (`pbn_smooth`):
+   - **Method:** take the midpoints of a chain's unit edges, then two passes
+     of Chaikin corner cutting (¼–¾ points).
+   - **End points:** open chains keep their end points, so chains still meet
+     at junctions and the picture border stays straight.
+   - **Clean-up:** afterwards, points collinear with their neighbours are
+     dropped (tolerance 1e-9).
+   - **Why:** smooth curves read as classic paint-by-number, and cutting only
+     within half a cell keeps shapes recognisable.
+6. **Fills** (preview only):
+   - **Sides:** each chain records the regions on its two sides. Side A is
+     along the normal (dy, −dx) of its first edge.
+   - **Outlines:** each region's outline is linked from the smoothed chains
+     that border it.
+   - **Paths:** each color is one even-odd path, so the fills meet the drawn
+     lines exactly.
+7. **Numbers:**
+   - **Spot:** one per region, at the cell with the greatest 8-neighbour depth
+     from the region's edge, found by multi-source BFS from edge cells. Ties
+     go to the cell nearest the region's centroid (squared distance, computed
+     with `dx*dx`), then the first in row-major order.
+   - **Size:** with room = (2·depth − 1)·pixel, size = min(text_max, 0.8·room,
+     0.8·room / (0.6·digits)). Below `pbn_text_min` the minimum is used, and
+     the notes count those regions.
+   - **Text:** the color's number, centred, with the baseline at the cell
+     centre + 0.35·size.
+8. **Board:**
+   - **Size:** cols·pixel + 2·margin by rows·pixel + 2·margin.
+   - **Groups and colors:**
+     - `outlines`: stroke `#0000ff`, 0.1 wide when engraving, or `#000000` at
+       `pbn_line_width` with round joins when printing.
+     - `numbers`: fill `#00e000` when engraving, or `#555555` when printing.
+     - `cut`, engrave only: a red rectangle around the board.
+   - **Why separate colors:** so each element can get its own laser settings.
+     The colors match LightBurn's default layers 01, 03 and 02.
+   - **Not packed:** the board is a single piece, and the notes warn if it is
+     larger than the sheet.
+9. **Files:**
+   - `<name>_pbn.svg`: the board;
+   - `<name>_pbn_preview.svg`: the fills plus 0.15 `#333333` outlines;
+   - `<name>_pbn_key.svg`: per color, a swatch, the number, hex, regions and
+     cells, and the credit if needed;
+   - `<picture>_scaled.png`: the merged grid;
+   - the notes file.
+
+   No tray, tile or kerf-test files are made.
+10. **Notes** report:
+    - cells, board size, use, the number of regions and colors, and how many
+      regions were merged;
+    - how many numbers are below the minimum size;
+    - the layer colors (engrave) or line color and width (print);
+    - any sheet-size warning.
+11. **UI:** a Kit type setting, either Mosaic tiles or Paint by number.
+    Settings used by only one kit type are greyed out (desktop) or hidden
+    (web); a web section disappears when none of its settings apply. The web
+    version also hides the Kerf test button. The previews draw the board in
+    its layer colors, and Show picture fills the smooth regions (web) or the
+    cells (desktop).
+
+**Checks:**
+- A 3 × 3 grid with one odd center cell and min region 2 merges to one color.
+- On the sample JPEG at 40 × 50:
+  - no region is smaller than the minimum;
+  - every region has exactly one number, inside it, showing its color;
+  - every boundary edge appears in exactly one chain;
+  - every color has fill outlines.
+- **Parity:** board, preview, key and notes are byte-identical to
+  pixelkit.py for:
+  - an emoji (engrave, smoothed);
+  - pixel art (print, steps, min region 1);
+  - the sample JPEG;
+  - a photo-like gradient at 80 × 80;
+  - aggressive merging (min region 40, margin 0).

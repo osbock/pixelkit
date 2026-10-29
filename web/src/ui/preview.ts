@@ -2,6 +2,7 @@
 // on the tray base, with wheel zoom, drag pan and double-click to fit.
 import type { SheetOut } from "../core/kit";
 import type { Pattern } from "../core/pattern";
+import { Board, pbnBody } from "../core/pbn";
 import { hexcolor, piecesMarkup } from "../core/svg";
 
 export class Preview {
@@ -44,7 +45,14 @@ export class Preview {
     const sameSize = this.sheetSize[0] === w && this.sheetSize[1] === h;
     this.sheetSize = [w, h];
     const overlay: string[] = [];
-    if (pattern) {
+    const board = items[0] instanceof Board ? items[0] : null;
+    if (pattern && board) { // paint by number: fill the smooth regions
+      board.fills.forEach((loops, idx) => {
+        if (!loops.length) return;
+        const d = loops.map((l) => "M" + l.map(([x, y]) => `${x.toFixed(3)},${y.toFixed(3)}`).join(" L") + " Z").join(" ");
+        overlay.push(`<path d="${d}" fill="${hexcolor(pattern.palette[idx])}" fill-rule="evenodd"/>`);
+      });
+    } else if (pattern) {
       const rows = pattern.grid.length, cols = pattern.grid[0].length;
       for (const pc of items) {
         if (!pc.picture) continue;
@@ -61,7 +69,7 @@ export class Preview {
     this.host.innerHTML =
       `<svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" viewBox="0 0 ${w} ${h}">` +
       `<rect width="${w}" height="${h}" fill="var(--sheet)"/>` +
-      `<g>${overlay.join("")}</g>${piecesMarkup(items).join("")}</svg>`;
+      `<g>${overlay.join("")}</g>${(board ? pbnBody(board) : piecesMarkup(items)).join("")}</svg>`;
     this.svg = this.host.querySelector("svg");
     if (sameSize && this.view) this.setView(this.view);
     else this.fit();

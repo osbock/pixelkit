@@ -1,7 +1,9 @@
 # pixelkit
 
 Generate laser-cut pixel art kits as SVG files: a tray to hold the picture,
-sheets of square tiles, and a printable color-by-number pattern.
+sheets of square tiles, and a printable color-by-number pattern. It also makes
+**paint-by-number boards**: the picture's color areas outlined and numbered,
+to engrave on wood or print.
 
 Give it a grid size and your material, optionally a picture (any image file, or
 an emoji from the bundled Twemoji set), and it writes cut-ready SVGs with kerf
@@ -53,6 +55,10 @@ Every push to `main` runs the tests and publishes the site to GitHub Pages
 
 ## What you get
 
+pixelkit makes two kinds of kit, chosen with **Kit type**.
+
+### Mosaic tiles (the default)
+
 - **Tray**, in one of two styles:
   - `box`: a base with finger joints on all four edges plus four finger-jointed
     walls.
@@ -82,6 +88,35 @@ Every push to `main` runs the tests and publishes the site to GitHub Pages
 All parts are packed onto sheets of your laser bed size. Spare tiles are trimmed
 when they alone would need another sheet, but the cut never drops below what
 the picture needs.
+
+### Paint by number
+
+Neighbouring cells of the same color become a region. Each region gets an
+outline and one number (its color's number in the key), placed in the
+roomiest spot and sized to fit. Specks smaller than **Min region** merge into
+their neighbour, so the board stays paintable. Higher cell counts (80–300 per
+side) give the most natural results.
+
+- **Board** (`<name>_pbn.svg`): outlines and numbers, with each kind on its
+  own color, so you can give them different laser settings:
+
+  | Element | Engrave | Print |
+  |---|---|---|
+  | Region outlines | blue `#0000ff` (LightBurn layer 01) | black, at Print line width |
+  | Numbers | green `#00e000` (LightBurn layer 03) | gray `#555555` |
+  | Board cut line | red `#ff0000` (LightBurn layer 02) | none |
+
+  They are also in separate SVG groups (`outlines`, `numbers`, `cut`).
+- **Color key** (`<name>_pbn_key.svg`): each number's color, with how many
+  regions and cells use it.
+- **Preview** (`<name>_pbn_preview.svg`): the finished picture in color, for
+  approval.
+- **Scaled image** and **notes file**, as for mosaics.
+
+No tray, tile or kerf-test files are made, and the settings that only
+mosaics use are hidden (web) or greyed out (desktop). The board is not packed
+onto sheets: it is one piece, and the notes warn if it is larger than the
+sheet size.
 
 ## Requirements
 
@@ -157,6 +192,13 @@ All lengths are in mm.
 | `image` | | Image file, or `emoji:<code>` from the picker |
 | `background` | #ffffff | Color used for transparent parts of the picture |
 | `colors` | 8 | Maximum number of colors. Near-identical colors are merged. |
+| `kit_type` | mosaic | `mosaic` (tray + tiles) or `paint_by_number` (one numbered board) |
+| `pbn_use` | engrave | Paint by number: `engrave` (laser layers plus a cut line) or `print` |
+| `pbn_min_region` | 4 | Regions smaller than this many cells merge into the neighbour they share the most border with |
+| `pbn_smooth` | on | Round off pixel steps in the outlines (off keeps the steps) |
+| `pbn_margin` | 10 | Board border around the picture |
+| `pbn_line_width` | 0.3 | Outline width when printing |
+| `pbn_text_min`, `pbn_text_max` | 2, 6 | Smallest and largest number size |
 
 **Pictures larger than the grid** are scaled down to fit without distortion,
 and any leftover rows or columns are filled with the picture's border color.

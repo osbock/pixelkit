@@ -3,7 +3,10 @@ import { zipSync } from "fflate";
 import { EmojiSet, emojiCode, isEmoji } from "../core/emoji";
 import { build, generate, kerfTest, type SheetOut, patternFor, scaledImageName, summary } from "../core/kit";
 import { composite, detectGrid, type Pattern, type RGBAImage, scaledImage } from "../core/pattern";
-import { DEFAULTS, INT_FIELDS, MAX_GRID, parseColor, type Settings, TILE_SHEETS, TRAY_STYLES } from "../core/settings";
+import {
+  DEFAULTS, INT_FIELDS, KIT_TYPES, MAX_GRID, MOSAIC_ONLY, parseColor, PBN_ONLY, PBN_USES, type Settings, TILE_SHEETS,
+  TRAY_STYLES,
+} from "../core/settings";
 import { decodeImage, download, encodePng } from "../image/browser";
 import { EmojiPicker } from "./emojiPicker";
 import { PixelEditor } from "./pixelEditor";
@@ -15,6 +18,7 @@ type Key = keyof Settings;
 type FieldSpec = [Key, string, { step?: number; min?: number; choices?: readonly string[] }?];
 
 const FORM: [string, FieldSpec[]][] = [
+  ["Kit", [["kit_type", "Kit type", { choices: KIT_TYPES }]]],
   ["Grid", [["cols", "Columns", { step: 1, min: 1 }], ["rows", "Rows", { step: 1, min: 1 }], ["pixel", "Pixel size (mm)", { step: 0.5 }]]],
   ["Material", [["tile_thickness", "Tile thickness (mm)", { step: 0.1 }], ["tray_thickness", "Tray thickness (mm)", { step: 0.1 }],
     ["kerf", "Tray kerf (mm)", { step: 0.01, min: 0 }], ["tile_kerf", "Tile kerf (mm)", { step: 0.01, min: -1 }]]],
@@ -27,10 +31,15 @@ const FORM: [string, FieldSpec[]][] = [
     ["spare_percent", "Spare tiles (%)", { step: 1, min: 0 }], ["tile_sheets", "Tile sheets", { choices: TILE_SHEETS }],
     ["tile_tabs", "Tabs between tiles"], ["tab_width", "Tab width (mm)", { step: 0.1, min: 0 }]]],
   ["Pattern (optional)", [["image", "Image"], ["background", "Background"], ["colors", "Max colors", { step: 1, min: 1 }]]],
+  ["Paint by number", [["pbn_use", "Board use", { choices: PBN_USES }],
+    ["pbn_min_region", "Min region (cells)", { step: 1, min: 1 }], ["pbn_smooth", "Smooth outlines"],
+    ["pbn_margin", "Board margin (mm)", { step: 1, min: 0 }], ["pbn_line_width", "Print line width (mm)", { step: 0.05 }],
+    ["pbn_text_min", "Min number (mm)", { step: 0.5 }], ["pbn_text_max", "Max number (mm)", { step: 0.5 }]]],
   ["Output", [["name", "Name prefix"]]],
 ];
 
 const SETTINGS_KEY = "pixelkit-settings";
+const CHOICE_LABELS: Record<string, string> = { mosaic: "Mosaic tiles", paint_by_number: "Paint by number" };
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---------------------------------------------------------------- state
@@ -47,6 +56,8 @@ let pending = ""; // message to show above the next rebuild's notes
 
 const preview = new Preview($("preview"));
 const inputs = new Map<Key, HTMLInputElement | HTMLSelectElement>();
+const rowOf = new Map<Key, HTMLElement>(); // each setting's row, for hiding by kit type
+const fieldsets: [HTMLFieldSetElement, Key[]][] = [];
 const imageName = document.createElement("div");
 
 function loadSettings(): Settings {
@@ -99,6 +110,7 @@ function buildForm(): void {
     const legend = document.createElement("legend");
     legend.textContent = title;
     fs.append(legend);
+    fieldsets.push([fs, fields.map(([key]) => key)]);
     for (const [key, label, opts = {}] of fields) {
       if (key === "image") {
         fs.append(imageControls());
@@ -113,6 +125,7 @@ function buildForm(): void {
         row.append(input, label);
         fs.append(row);
         inputs.set(key, input);
+        rowOf.set(key, row);
         continue;
       }
       const row = document.createElement("div");
@@ -123,7 +136,8 @@ function buildForm(): void {
       let input: HTMLInputElement | HTMLSelectElement;
       if (opts.choices) {
         input = document.createElement("select");
-        for (const c of opts.choices) input.append(new Option(c, c));
+        for (const c of opts.choices) input.append(new Option(CHOICE_LABELS[c] ?? c, c));
+        if (key === "kit_type") row.classList.add("wide");
         row.append(lab, input);
       } else if (key === "background") {
         input = document.createElement("input");
@@ -157,6 +171,7 @@ function buildForm(): void {
       input.id = `f-${key}`;
       fs.append(row);
       inputs.set(key, input);
+      rowOf.set(key, row);
     }
     form.append(fs);
   }
@@ -206,6 +221,15 @@ function imageControls(): HTMLElement {
   return wrap;
 }
 
+/** Show only the settings the current kit type uses. */
+function updateVisibility(): void {
+  const pbn = settings.kit_type === "paint_by_number";
+  const hiddenKey = (k: Key) => (pbn && MOSAIC_ONLY.has(k)) || (!pbn && PBN_ONLY.has(k));
+  for (const [key, row] of rowOf) row.hidden = hiddenKey(key);
+  for (const [fs, keys] of fieldsets) fs.hidden = keys.every(hiddenKey);
+  $("kerf-test").hidden = pbn;
+}
+
 function writeForm(): void {
   for (const [key, input] of inputs) {
     const v = settings[key];
@@ -221,6 +245,7 @@ function writeForm(): void {
     ? (isEmoji(settings.image) ? `Emoji: ${settings.image.slice(settings.image.indexOf(" ") + 1)}` : settings.image)
     : "No picture (tray and blank tiles only)";
   imageName.classList.toggle("set", Boolean(settings.image));
+  updateVisibility();
 }
 
 /** Read the form; returns the problem text for unparseable numbers. */
@@ -240,6 +265,7 @@ function readForm(): string | null {
 
 function changed(): void {
   const problem = readForm();
+  updateVisibility();
   try {
     $("summary").textContent = summary(settings);
   } catch { /* summary needs numbers only */ }

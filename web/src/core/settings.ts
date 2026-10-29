@@ -1,10 +1,13 @@
 // Kit settings: same names, defaults and rules as pixelkit.py (spec.md §4).
 
+export const KIT_TYPES = ["mosaic", "paint_by_number"] as const;
+export const PBN_USES = ["engrave", "print"] as const;
 export const TRAY_STYLES = ["box", "layered", "none"] as const;
 export const TILE_SHEETS = ["combined", "per_color"] as const;
 export const MAX_GRID = 300; // tiles per side; beyond this the layout gets impractically slow
 
 export interface Settings {
+  kit_type: (typeof KIT_TYPES)[number]; // mosaic (tray + tiles) | paint_by_number (one numbered board)
   cols: number;
   rows: number;
   pixel: number;            // finished tile size, mm
@@ -31,10 +34,18 @@ export interface Settings {
   image: string;            // image file name, or "emoji:<code> <name>" from the bundled set
   background: string;       // color behind transparent parts of the image
   colors: number;
+  pbn_use: (typeof PBN_USES)[number]; // paint by number: engrave (laser layers + cut line) | print
+  pbn_min_region: number;   // regions smaller than this many cells merge into a neighbour
+  pbn_smooth: boolean;      // round off pixel steps in the outlines
+  pbn_margin: number;       // board border around the picture, mm
+  pbn_line_width: number;   // outline width when printing, mm
+  pbn_text_min: number;     // smallest number, mm
+  pbn_text_max: number;     // largest number, mm
   name: string;             // prefix for output file names
 }
 
 export const DEFAULTS: Settings = {
+  kit_type: "mosaic",
   cols: 20,
   rows: 25,
   pixel: 10,
@@ -61,10 +72,24 @@ export const DEFAULTS: Settings = {
   image: "",
   background: "#ffffff",
   colors: 8,
+  pbn_use: "engrave",
+  pbn_min_region: 4,
+  pbn_smooth: true,
+  pbn_margin: 10,
+  pbn_line_width: 0.3,
+  pbn_text_min: 2,
+  pbn_text_max: 6,
   name: "pixelart",
 };
 
-export const INT_FIELDS = new Set<keyof Settings>(["cols", "rows", "colors"]);
+export const INT_FIELDS = new Set<keyof Settings>(["cols", "rows", "colors", "pbn_min_region"]);
+
+/** Settings that only one kind of kit uses; the UI hides the others. */
+export const MOSAIC_ONLY = new Set<keyof Settings>(["tile_thickness", "tray_thickness", "kerf", "tile_kerf",
+  "tray_style", "tile_clearance", "lip", "finger_width", "joint_play", "frame_width", "engrave_grid",
+  "engrave_numbers", "spacing", "tile_border", "spare_percent", "tile_sheets", "tile_tabs", "tab_width"]);
+export const PBN_ONLY = new Set<keyof Settings>(["pbn_use", "pbn_min_region", "pbn_smooth", "pbn_margin",
+  "pbn_line_width", "pbn_text_min", "pbn_text_max"]);
 
 export function withDefaults(partial: Partial<Settings>): Settings {
   return { ...DEFAULTS, ...partial };
@@ -101,6 +126,8 @@ export function validate(s: Settings): string[] {
   }
   if (s.kerf < 0 || s.kerf >= s.pixel) problems.push("Kerf must be between 0 and the pixel size.");
   if (s.tile_kerf < -1 || s.tile_kerf >= s.pixel) problems.push("Tile kerf must be between -1 mm and the pixel size.");
+  if (!KIT_TYPES.includes(s.kit_type)) problems.push(`kit_type must be one of ${KIT_TYPES.join(", ")}.`);
+  if (!PBN_USES.includes(s.pbn_use)) problems.push(`pbn_use must be one of ${PBN_USES.join(", ")}.`);
   if (!TRAY_STYLES.includes(s.tray_style)) problems.push(`tray_style must be one of ${TRAY_STYLES.join(", ")}.`);
   if (!TILE_SHEETS.includes(s.tile_sheets)) problems.push(`tile_sheets must be one of ${TILE_SHEETS.join(", ")}.`);
   if (s.tile_tabs && !(s.tab_width > 0 && s.tab_width < s.pixel / 2)) {
@@ -108,6 +135,16 @@ export function validate(s: Settings): string[] {
   }
   if (s.tray_style === "box" && s.finger_width < 2 * s.kerf + 1) problems.push("Finger width is too small.");
   if (!parseColor(s.background)) problems.push(`Background '${s.background}' is not a color (use e.g. #1e8cdc).`);
+  if (s.kit_type === "paint_by_number") {
+    if (!s.image) problems.push("Paint by number needs a picture.");
+    if (s.pbn_min_region < 1) problems.push("Min region must be at least 1 cell.");
+    if (!(s.pbn_text_min > 0 && s.pbn_text_min <= s.pbn_text_max)) {
+      problems.push("Number sizes must be positive, with the minimum no larger than the maximum.");
+    }
+    if (s.pbn_line_width <= 0 || s.pbn_margin < 0) {
+      problems.push("Line width must be positive and the board margin not negative.");
+    }
+  }
   if (s.engrave_numbers && !s.image) problems.push("Engraving color numbers needs a pattern image.");
   return problems;
 }
