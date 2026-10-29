@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { build, generate } from "../src/core/kit";
 import type { RGBAImage } from "../src/core/pattern";
 import {
-  Board, labelRegions, mergeSmallRegions, numberSpots, outlineChains, PBN_LINE, PBN_NUMBER,
+  absorbSmallRegions, Board, labelRegions, numberSpots, outlineChains, PBN_LINE, PBN_NUMBER,
 } from "../src/core/pbn";
 import { canvasMm, DEFAULTS, effectiveSettings, type Settings, validate } from "../src/core/settings";
 import { decode, decodePng, emoji, ROOT, sunflower, writePng } from "./helpers";
@@ -56,18 +56,20 @@ function cases(): [string, Partial<Settings>, RGBAImage][] {
   return [
     ["emoji, engrave, smooth", { image: "emoji:1f33b sunflower", cols: 24, rows: 24, colors: 6, background: "#1e8cdc" },
       decodePng(emoji().png("1f33b"))],
-    ["pixel art, print, steps", { image: png(sunflower(10)), pbn_use: "print", pbn_smooth: false, pbn_min_region: 1,
+    ["pixel art, print, steps", { image: png(sunflower(10)), pbn_use: "print", pbn_smooth: false, pbn_min_area: 0, pbn_min_width: 0,
       pbn_line_width: 0.5 }, sunflower(10)],
     ["sample JPEG 40 x 50", { image: png(jpeg), cols: 40, rows: 50, pixel: 5 }, jpeg],
-    ["photo-like, many regions", { image: png(photo), cols: 80, rows: 80, pixel: 3, colors: 10, pbn_min_region: 6 }, photo],
-    ["aggressive merging", { image: png(photo), cols: 60, rows: 60, pixel: 4, colors: 12, pbn_min_region: 40,
+    ["photo-like, many regions", { image: png(photo), cols: 80, rows: 80, pixel: 3, colors: 10, pbn_min_area: 50, pbn_min_width: 4 }, photo],
+    ["aggressive merging", { image: png(photo), cols: 60, rows: 60, pixel: 4, colors: 12, pbn_min_area: 600, pbn_min_width: 10,
       pbn_text_min: 3, pbn_text_max: 9, pbn_margin: 0 }, photo],
     ["canvas 8x10in, fit, emoji enlarged", { image: "emoji:1f33b sunflower", canvas: "8x10in", pixel: 2.5,
       background: "#1e8cdc" }, decodePng(emoji().png("1f33b"))],
     ["canvas 12x16in landscape, fill", { image: png(jpeg), canvas: "12x16in", canvas_landscape: true,
       canvas_fit: "fill", pixel: 4 }, jpeg],
     ["canvas custom, fill, shrunk", { image: png(photo), canvas: "custom", canvas_width: 150, canvas_height: 100,
-      canvas_fit: "fill", pixel: 2, colors: 9, pbn_min_region: 6 }, photo],
+      canvas_fit: "fill", pixel: 0.5, colors: 9, pbn_simplify: 0.1 }, photo],
+    ["high resolution, absorb + simplify", { image: png(jpeg), canvas: "8x10in", pixel: 0.4, colors: 12,
+      pbn_min_area: 8, pbn_min_width: 2 }, jpeg],
     ["canvas 30x40cm, fit, print", { image: png(jpeg), canvas: "30x40cm", pixel: 3, pbn_use: "print",
       pbn_margin: 15 }, jpeg],
   ];
@@ -97,11 +99,17 @@ describe("paint by number structure", () => {
     return { b, board: b.sheets[0].items[0] as Board, grid: b.pattern!.grid };
   };
 
-  it("merges every region below the minimum", () => {
-    const { grid } = sample();
-    expect(Math.min(...labelRegions(grid).sizes)).toBeGreaterThanOrEqual(4);
+  it("absorbs every region below the minimum area", () => {
+    const img = decode(resolve(ROOT, "sample-images/poop-emoji.jpeg"));
+    const b = build(S({ image: "poop.jpeg", cols: 40, rows: 50, pixel: 5, pbn_min_area: 100 }), img);
+    expect(Math.min(...labelRegions(b.pattern!.grid).sizes)).toBeGreaterThanOrEqual(4); // 100 mm² = 4 cells
     const tiny = [[0, 0, 0], [0, 1, 0], [0, 0, 0]];
-    expect(mergeSmallRegions(tiny, 2)).toEqual({ grid: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], merged: 1 });
+    expect(absorbSmallRegions(tiny, 2, 1)).toEqual({ grid: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], removed: 1 });
+    // A one-cell fringe between two areas splits between them instead of becoming either.
+    const fringe = Array.from({ length: 6 }, () => [0, 0, 0, 0, 0, 2, 1, 1, 1, 1, 1]);
+    const { grid: split, removed } = absorbSmallRegions(fringe, 1, 2);
+    expect(removed).toBe(1);
+    expect(split.every((row) => row[5] === 0 || row[5] === 1)).toBe(true);
   });
 
   it("puts exactly one number in each region, inside it", () => {
@@ -190,7 +198,8 @@ describe("paint by number canvases", () => {
   });
 
   it("rejects canvases needing too many cells", () => {
-    expect(validate(S({ image: "x.png", canvas: "18x24in", pixel: 0.5 }))).toEqual(
-      ["The canvas needs 874 x 1179 cells of 0.5 mm; the limit is 300 per side, so use a larger pixel size."]);
+    expect(validate(S({ image: "x.png", canvas: "18x24in", pixel: 0.1 }))).toEqual(
+      ["The canvas needs 4372 x 5896 cells of 0.1 mm; the limit is 1500 per side, so use a larger pixel size."]);
+    expect(validate(S({ image: "x.png", canvas: "18x24in", pixel: 0.5 }))).toEqual([]); // 874 x 1179 is fine now
   });
 });

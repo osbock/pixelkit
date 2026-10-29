@@ -46,84 +46,69 @@ export function labelRegions(grid: Grid): { labels: Grid; sizes: number[] } {
   return { labels, sizes };
 }
 
-/** Min-heap of [size, id] pairs, popped in the same order as Python's heapq
- * (keys are unique, so any correct heap agrees). */
-class Heap {
-  private a: [number, number][] = [];
-  private less = (x: [number, number], y: [number, number]) => x[0] < y[0] || (x[0] === y[0] && x[1] < y[1]);
-  get size() { return this.a.length; }
-  push(v: [number, number]): void {
-    const a = this.a;
-    a.push(v);
-    for (let k = a.length - 1; k > 0;) {
-      const p = (k - 1) >> 1;
-      if (!this.less(a[k], a[p])) break;
-      [a[k], a[p]] = [a[p], a[k]];
-      k = p;
-    }
-  }
-  pop(): [number, number] {
-    const a = this.a, top = a[0], last = a.pop()!;
-    if (a.length) {
-      a[0] = last;
-      for (let k = 0; ;) {
-        const l = 2 * k + 1, r = l + 1;
-        let m = k;
-        if (l < a.length && this.less(a[l], a[m])) m = l;
-        if (r < a.length && this.less(a[r], a[m])) m = r;
-        if (m === k) break;
-        [a[k], a[m]] = [a[m], a[k]];
-        k = m;
-      }
-    }
-    return top;
-  }
-}
-
-/** Repaint regions smaller than minSize cells with the color of the
- * neighbour they share the longest border with (ties: larger region, then
- * lower id), smallest first. */
-export function mergeSmallRegions(grid: Grid, minSize: number): { grid: Grid; merged: number } {
+/** Per cell, the 8-neighbour steps to the edge of its region (1 = on the
+ * edge), by multi-source BFS from edge cells in row-major order. */
+export function regionDepths(grid: Grid, labels: Grid): Grid {
   const rows = grid.length, cols = grid[0].length;
-  const { labels, sizes } = labelRegions(grid);
-  const colors = new Array<number>(sizes.length).fill(0);
-  const cells: [number, number][][] = sizes.map(() => []);
+  const depth = grid.map((row) => row.map(() => 0));
+  const queue: [number, number][] = [];
   for (let j = 0; j < rows; j++) {
     for (let i = 0; i < cols; i++) {
-      colors[labels[j][i]] = grid[j][i];
-      cells[labels[j][i]].push([i, j]);
-    }
-  }
-  const alive = sizes.map(() => true);
-  const heap = new Heap();
-  sizes.forEach((n, rid) => heap.push([n, rid]));
-  let merged = 0;
-  while (heap.size) {
-    const [n, rid] = heap.pop();
-    if (!alive[rid] || n !== sizes[rid]) continue; // stale entry
-    if (n >= minSize) break;
-    const border = new Map<number, number>();
-    for (const [i, j] of cells[rid]) {
-      for (const [di, dj] of N4) {
+      for (const [di, dj] of N8) {
         const ni = i + di, nj = j + dj;
-        if (ni >= 0 && ni < cols && nj >= 0 && nj < rows && labels[nj][ni] !== rid) {
-          border.set(labels[nj][ni], (border.get(labels[nj][ni]) ?? 0) + 1);
+        if (!(ni >= 0 && ni < cols && nj >= 0 && nj < rows) || labels[nj][ni] !== labels[j][i]) {
+          depth[j][i] = 1;
+          queue.push([i, j]);
+          break;
         }
       }
     }
-    if (!border.size) continue; // the whole picture is one region
-    let target = -1;
-    for (const t of border.keys()) {
-      if (target < 0 || cmp([border.get(t)!, sizes[t], -t], [border.get(target)!, sizes[target], -target]) > 0) target = t;
-    }
-    for (const [i, j] of cells[rid]) labels[j][i] = target;
-    cells[target].push(...cells[rid]);
-    sizes[target] += sizes[rid];
-    alive[rid] = false;
-    merged++;
-    heap.push([sizes[target], target]);
   }
-  return { grid: labels.map((row) => row.map((rid) => colors[rid])), merged };
+  for (let k = 0; k < queue.length; k++) {
+    const [i, j] = queue[k];
+    for (const [di, dj] of N8) {
+      const ni = i + di, nj = j + dj;
+      if (ni >= 0 && ni < cols && nj >= 0 && nj < rows && depth[nj][ni] === 0) {
+        depth[nj][ni] = depth[j][i] + 1;
+        queue.push([ni, nj]);
+      }
+    }
+  }
+  return depth;
+}
+
+/** Remove regions too small (under minCells) or too thin (no cell minDepth
+ * deep) to paint and number. Their cells go to the surrounding regions,
+ * which grow into them together (4-neighbour BFS from every kept cell,
+ * row-major): a speck fills in, and a fringe between two areas splits down
+ * the middle. */
+export function absorbSmallRegions(grid: Grid, minCells: number, minDepth: number): { grid: Grid; removed: number } {
+  const rows = grid.length, cols = grid[0].length;
+  const { labels, sizes } = labelRegions(grid);
+  const depth = regionDepths(grid, labels);
+  const deepest = sizes.map(() => 0);
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) if (depth[j][i] > deepest[labels[j][i]]) deepest[labels[j][i]] = depth[j][i];
+  }
+  const keep = sizes.map((n, r) => n >= minCells && deepest[r] >= minDepth);
+  const removed = keep.filter((k) => !k).length;
+  if (removed === 0 || removed === sizes.length) return { grid, removed: 0 };
+  const out = grid.map((row) => row.slice());
+  const done = labels.map((row) => row.map((rid) => keep[rid]));
+  const queue: [number, number][] = [];
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) if (done[j][i]) queue.push([i, j]);
+  for (let k = 0; k < queue.length; k++) {
+    const [i, j] = queue[k];
+    for (const [di, dj] of N4) {
+      const ni = i + di, nj = j + dj;
+      if (ni >= 0 && ni < cols && nj >= 0 && nj < rows && !done[nj][ni]) {
+        done[nj][ni] = true;
+        out[nj][ni] = out[j][i];
+        queue.push([ni, nj]);
+      }
+    }
+  }
+  return { grid: out, removed };
 }
 
 /** Region boundaries as polylines in grid units, each shared border once.
@@ -131,50 +116,52 @@ export function mergeSmallRegions(grid: Grid, minSize: number): { grid: Grid; me
  * boundaries with no junction are closed loops. */
 export function outlineChains(grid: Grid): Chain[] {
   const rows = grid.length, cols = grid[0].length;
-  const hEdge = (x: number, y: number) => x >= 0 && x < cols &&
-    (y === 0 || y === rows || (y > 0 && y < rows && grid[y - 1][x] !== grid[y][x]));
-  const vEdge = (x: number, y: number) => y >= 0 && y < rows &&
-    (x === 0 || x === cols || (x > 0 && x < cols && grid[y][x - 1] !== grid[y][x]));
-  type Link = [string, Pt];
+  // hor[y][x]: edge (x, y)-(x+1, y); ver[y][x]: edge (x, y)-(x, y+1)
+  const hor = Array.from({ length: rows + 1 }, (_, y) =>
+    Array.from({ length: cols }, (_, x) => y === 0 || y === rows || grid[y - 1][x] !== grid[y][x]));
+  const ver = Array.from({ length: rows }, (_, y) =>
+    Array.from({ length: cols + 1 }, (_, x) => x === 0 || x === cols || grid[y][x - 1] !== grid[y][x]));
+  const nh = (rows + 1) * cols;
+  const seen = new Uint8Array(nh + rows * (cols + 1));
+  type Link = [number, Pt];
   const links = (x: number, y: number): Link[] => { // right, down, left, up
     const out: Link[] = [];
-    if (hEdge(x, y)) out.push([`h${x},${y}`, [x + 1, y]]);
-    if (vEdge(x, y)) out.push([`v${x},${y}`, [x, y + 1]]);
-    if (hEdge(x - 1, y)) out.push([`h${x - 1},${y}`, [x - 1, y]]);
-    if (vEdge(x, y - 1)) out.push([`v${x},${y - 1}`, [x, y - 1]]);
+    if (x < cols && hor[y][x]) out.push([y * cols + x, [x + 1, y]]);
+    if (y < rows && ver[y][x]) out.push([nh + y * (cols + 1) + x, [x, y + 1]]);
+    if (x > 0 && hor[y][x - 1]) out.push([y * cols + x - 1, [x - 1, y]]);
+    if (y > 0 && ver[y - 1][x]) out.push([nh + (y - 1) * (cols + 1) + x, [x, y - 1]]);
     return out;
   };
-  const isCorner = (x: number, y: number) => (x === 0 || x === cols) && (y === 0 || y === rows);
   const junction = (x: number, y: number) => {
+    if ((x === 0 || x === cols) && (y === 0 || y === rows)) return true;
     const n = links(x, y).length;
-    return isCorner(x, y) || (n !== 0 && n !== 2);
+    return n !== 0 && n !== 2;
   };
-  const seen = new Set<string>();
   const chains: Chain[] = [];
-  const walk = (start: Pt, edge: string, next: Pt): Pt[] => {
+  const walk = (start: Pt, edge: number, next: Pt): Pt[] => {
     const pts: Pt[] = [start];
-    seen.add(edge);
+    seen[edge] = 1;
     let cur = next;
     for (;;) {
       pts.push(cur);
       if (junction(cur[0], cur[1]) || (cur[0] === start[0] && cur[1] === start[1])) return pts;
-      const follow = links(cur[0], cur[1]).filter(([e]) => !seen.has(e));
+      const follow = links(cur[0], cur[1]).filter(([e]) => !seen[e]);
       if (!follow.length) return pts;
       const [e, n] = follow[0];
-      seen.add(e);
+      seen[e] = 1;
       cur = n;
     }
   };
   for (let y = 0; y <= rows; y++) {
     for (let x = 0; x <= cols; x++) {
       if (!junction(x, y)) continue;
-      for (const [e, n] of links(x, y)) if (!seen.has(e)) chains.push({ pts: walk([x, y], e, n), closed: false });
+      for (const [e, n] of links(x, y)) if (!seen[e]) chains.push({ pts: walk([x, y], e, n), closed: false });
     }
   }
   for (let y = 0; y <= rows; y++) {
     for (let x = 0; x <= cols; x++) {
       for (const [e, n] of links(x, y)) {
-        if (!seen.has(e)) chains.push({ pts: walk([x, y], e, n).slice(0, -1), closed: true });
+        if (!seen[e]) chains.push({ pts: walk([x, y], e, n).slice(0, -1), closed: true });
       }
     }
   }
@@ -235,6 +222,61 @@ export function dropCollinear(pts: Pt[], closed: boolean): Pt[] {
   return out;
 }
 
+/** Douglas-Peucker on an open polyline with squared tolerance tol2,
+ * keeping both ends (iterative, so long chains don't recurse deeply). */
+function dp(pts: Pt[], tol2: number): Pt[] {
+  const keep = pts.map(() => false);
+  keep[0] = keep[pts.length - 1] = true;
+  const stack: [number, number][] = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    if (b - a < 2) continue;
+    const [ax, ay] = pts[a], [bx, by] = pts[b];
+    const dx = bx - ax, dy = by - ay;
+    const l2 = dx * dx + dy * dy;
+    let best = -1, far = -1;
+    for (let k = a + 1; k < b; k++) {
+      const [px, py] = pts[k];
+      let d: number;
+      if (l2 === 0) d = (px - ax) * (px - ax) + (py - ay) * (py - ay);
+      else {
+        const c = dx * (ay - py) - (ax - px) * dy;
+        d = (c * c) / l2;
+      }
+      if (d > far) {
+        far = d;
+        best = k;
+      }
+    }
+    if (far > tol2) {
+      keep[best] = true;
+      stack.push([a, best], [best, b]);
+    }
+  }
+  return pts.filter((_, k) => keep[k]);
+}
+
+/** Drop points within tol of the simplified line (Douglas-Peucker). A
+ * closed loop is split at its first point and the point farthest from it. */
+export function simplifyChain(pts: Pt[], closed: boolean, tol: number): Pt[] {
+  if (tol <= 0 || pts.length < 3) return pts.slice();
+  const tol2 = tol * tol;
+  if (!closed) return dp(pts, tol2);
+  const [ax, ay] = pts[0];
+  let far = -1, best = 0;
+  for (let k = 1; k < pts.length; k++) {
+    const d = (pts[k][0] - ax) * (pts[k][0] - ax) + (pts[k][1] - ay) * (pts[k][1] - ay);
+    if (d > far) {
+      far = d;
+      best = k;
+    }
+  }
+  const first = dp(pts.slice(0, best + 1), tol2);
+  const second = dp([...pts.slice(best), pts[0]], tol2);
+  const out = [...first.slice(0, -1), ...second.slice(0, -1)];
+  return out.length >= 3 ? out : pts.slice();
+}
+
 /** Region ids on the two sides of a chain's first edge (-1 off the grid):
  * side A along the normal (dy, -dx) of travel, side B opposite. */
 export function chainSides(chain: Pt[], labels: Grid): [number, number] {
@@ -292,30 +334,7 @@ export function regionLoops(chains: Chain[], sides: [number, number][], nregions
 export function numberSpots(grid: Grid): [number, number, number, number][] {
   const rows = grid.length, cols = grid[0].length;
   const { labels, sizes } = labelRegions(grid);
-  const depth = grid.map((row) => row.map(() => 0));
-  const queue: [number, number][] = [];
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols; i++) {
-      for (const [di, dj] of N8) {
-        const ni = i + di, nj = j + dj;
-        if (!(ni >= 0 && ni < cols && nj >= 0 && nj < rows) || labels[nj][ni] !== labels[j][i]) {
-          depth[j][i] = 1;
-          queue.push([i, j]);
-          break;
-        }
-      }
-    }
-  }
-  for (let k = 0; k < queue.length; k++) {
-    const [i, j] = queue[k];
-    for (const [di, dj] of N8) {
-      const ni = i + di, nj = j + dj;
-      if (ni >= 0 && ni < cols && nj >= 0 && nj < rows && depth[nj][ni] === 0) {
-        depth[nj][ni] = depth[j][i] + 1;
-        queue.push([ni, nj]);
-      }
-    }
-  }
+  const depth = regionDepths(grid, labels);
   const sx = sizes.map(() => 0), sy = sizes.map(() => 0);
   for (let j = 0; j < rows; j++) {
     for (let i = 0; i < cols; i++) {
@@ -357,7 +376,10 @@ export function pbnLayout(s: Settings, cols: number, rows: number): [number, num
 export interface PbnResult { board: Board; w: number; h: number; pattern: Pattern; regions: number[]; notes: string[] }
 
 export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
-  const { grid: mergedGrid, merged } = mergeSmallRegions(pattern.grid, Math.max(1, s.pbn_min_region));
+  const p = s.pixel;
+  const minCells = Math.max(1, Math.ceil(s.pbn_min_area / (p * p) - 1e-9));
+  const minDepth = Math.max(1, Math.ceil((s.pbn_min_width / p + 1) / 2 - 1e-9)); // widest square (2d - 1) cells
+  const { grid: mergedGrid, removed: merged } = absorbSmallRegions(pattern.grid, minCells, minDepth);
   // Renumber colors by tile count, as for mosaics (merging changes counts).
   const counts = new Map<number, number>();
   for (const row of mergedGrid) for (const idx of row) counts.set(idx, (counts.get(idx) ?? 0) + 1);
@@ -370,7 +392,6 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
   };
 
   const rows = grid.length, cols = grid[0].length;
-  const p = s.pixel;
   const [w, h, ox, oy] = pbnLayout(s, cols, rows);
   const engrave = s.pbn_use === "engrave";
   const board = new Board("paint_by_number");
@@ -382,7 +403,8 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
   const chains = outlineChains(grid);
   const sides = chains.map((c) => chainSides(c.pts, labels));
   const shaped: Chain[] = chains.map(({ pts, closed }) =>
-    ({ pts: dropCollinear(s.pbn_smooth ? smoothChain(pts, closed) : pts, closed), closed }));
+    ({ pts: simplifyChain(dropCollinear(s.pbn_smooth ? smoothChain(pts, closed) : pts, closed), closed, s.pbn_simplify / p),
+      closed }));
   const toMm = (pts: Pt[]): Pt[] => pts.map(([x, y]) => [ox + x * p, oy + y * p]);
   board.engraves = shaped.map(({ pts, closed }) => ({ pts: toMm(pts), closed }));
   // Fills for the color preview: each color's region outlines as one path.
@@ -413,7 +435,8 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
   const notes = [
     `Paint by number: ${cols} x ${rows} cells at ${g(s.pixel)} mm, board ${fixed(w, 0)} x ${fixed(h, 0)} mm ` +
       `(${s.pbn_use}); ${total} regions in ${order.length} colors` +
-      (merged ? `, ${merged} region(s) under ${s.pbn_min_region} cells merged into a neighbour` : ""),
+      (merged ? `, ${merged} region(s) smaller than ${g(s.pbn_min_area)} mm\u00b2 or narrower than ${g(s.pbn_min_width)} mm ` +
+        "absorbed by their neighbours" : ""),
   ];
   const c = canvasMm(s);
   if (c) {
@@ -423,7 +446,7 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
   }
   if (tight) {
     notes.push(`${tight} region(s) are too small for a ${g(s.pbn_text_min)} mm number; ` +
-      "their numbers overlap the outlines. Raise Min region or use more cells.");
+      "their numbers overlap the outlines. Raise Min area or Min width.");
   }
   if (engrave) notes.push(`Layers: ${PBN_LINE} = region outlines, ${PBN_NUMBER} = numbers, ${CUT} = board cut line.`);
   else notes.push(`Print: outlines ${PBN_PRINT_LINE} at ${g(s.pbn_line_width)} mm, numbers ${PBN_PRINT_NUMBER}.`);

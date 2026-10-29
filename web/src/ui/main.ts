@@ -4,7 +4,7 @@ import { EmojiSet, emojiCode, isEmoji } from "../core/emoji";
 import { build, generate, kerfTest, type SheetOut, patternFor, scaledImageName, summary } from "../core/kit";
 import { composite, detectGrid, type Pattern, type RGBAImage, scaledImage } from "../core/pattern";
 import {
-  CANVAS_FITS, CANVASES, canvasMm, DEFAULTS, effectiveSettings, INT_FIELDS, KIT_TYPES, MAX_GRID, MOSAIC_ONLY, parseColor, PBN_ONLY, PBN_USES, type Settings, TILE_SHEETS,
+  CANVAS_FITS, CANVASES, canvasMm, DEFAULTS, effectiveSettings, gridLimit, INT_FIELDS, KIT_TYPES, MAX_GRID_PBN, MOSAIC_ONLY, parseColor, PBN_ONLY, PBN_USES, type Settings, TILE_SHEETS,
   TRAY_STYLES,
 } from "../core/settings";
 import { decodeImage, download, encodePng } from "../image/browser";
@@ -35,7 +35,8 @@ const FORM: [string, FieldSpec[]][] = [
     ["canvas_width", "Custom width (mm)", { step: 1 }], ["canvas_height", "Custom height (mm)", { step: 1 }],
     ["canvas_fit", "Picture fit", { choices: CANVAS_FITS }],
     ["pbn_use", "Board use", { choices: PBN_USES }],
-    ["pbn_min_region", "Min region (cells)", { step: 1, min: 1 }], ["pbn_smooth", "Smooth outlines"],
+    ["pbn_min_area", "Min area (mm²)", { step: 1, min: 0 }], ["pbn_min_width", "Min width (mm)", { step: 0.25, min: 0 }],
+    ["pbn_simplify", "Simplify (mm)", { step: 0.01, min: 0 }], ["pbn_smooth", "Smooth outlines"],
     ["pbn_margin", "Board margin (mm)", { step: 1, min: 0 }], ["pbn_line_width", "Print line width (mm)", { step: 0.05 }],
     ["pbn_text_min", "Min number (mm)", { step: 0.5 }], ["pbn_text_max", "Max number (mm)", { step: 0.5 }]]],
   ["Output", [["name", "Name prefix"]]],
@@ -172,7 +173,7 @@ function buildForm(): void {
           input.type = "number";
           input.step = String(opts.step ?? "any");
           if (opts.min !== undefined) input.min = String(opts.min);
-          if (key === "cols" || key === "rows") input.max = String(MAX_GRID);
+          if (key === "cols" || key === "rows") input.max = String(MAX_GRID_PBN);
         } else input.type = "text";
         row.append(lab, input);
       }
@@ -295,7 +296,7 @@ function changed(): void {
   }
   saveSettings();
   clearTimeout(rebuildTimer);
-  rebuildTimer = window.setTimeout(() => void rebuild(), 300);
+  rebuildTimer = window.setTimeout(() => void rebuild(), isLarge() ? 900 : 300);
 }
 
 // ---------------------------------------------------------------- build
@@ -323,8 +324,20 @@ async function currentPatternFor(): Promise<Pattern | null> {
   return patternCache.pattern;
 }
 
+const LARGE_BOARD = 250_000; // cells; bigger paint-by-number boards wait longer before rebuilding
+
+function isLarge(): boolean {
+  const e = effectiveSettings(settings);
+  return e.kit_type === "paint_by_number" && e.cols * e.rows > LARGE_BOARD;
+}
+
 async function rebuild(): Promise<void> {
   try {
+    if (isLarge()) {
+      const e = effectiveSettings(settings);
+      log(`Building the ${e.cols} x ${e.rows} board…`);
+      await new Promise((r) => setTimeout(r, 30)); // let the message show before the work starts
+    }
     const pattern = await currentPatternFor();
     if (settings.image && !pattern) {
       log("The picture isn't loaded any more; choose it again.", true);
@@ -428,7 +441,7 @@ async function setGridFromImage(): Promise<void> {
   }
   const found = detectGrid(composite(img, [255, 255, 255]));
   let msg: string;
-  if (found && Math.max(...found) <= MAX_GRID) {
+  if (found && Math.max(...found) <= gridLimit(settings)) {
     [settings.cols, settings.rows] = found;
     msg = `Detected a ${found[0]} x ${found[1]} pixel-art grid in the ${img.width} x ${img.height} px image.`;
   } else {

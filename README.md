@@ -93,9 +93,20 @@ the picture needs.
 
 Neighbouring cells of the same color become a region. Each region gets an
 outline and one number (its color's number in the key), placed in the
-roomiest spot and sized to fit. Specks smaller than **Min region** merge into
-their neighbour, so the board stays paintable. Higher cell counts (80–300 per
-side) give the most natural results.
+roomiest spot and sized to fit. Regions too small to paint (under **Min
+area**) or too thin (nowhere as wide as **Min width**) are absorbed by the
+regions around them. A speck fills in; a sliver or a fringe of in-between
+color splits between its neighbours. Boards can be up to 1,500 cells per side.
+
+**For detailed pictures**, use small cells. For example, 0.25–0.3 mm on an
+8 × 10 in canvas gives about 700 × 900 cells, and is ideal for posterized,
+flat-color art. Min area and Min width then decide how much detail survives,
+and **Simplify** keeps the outline files small.
+
+**Large boards** take a few seconds to build. On the web the preview waits a
+little longer after you type. In the desktop app, boards over 250,000 cells
+preview only when you press **Preview**, and the desktop pixel editor handles
+grids up to 120,000 cells.
 
 - **Board** (`<name>_pbn.svg`): outlines and numbers, with each kind on its
   own color, so you can give them different laser settings:
@@ -206,7 +217,9 @@ All lengths are in mm.
 | `colors` | 8 | Maximum number of colors. Near-identical colors are merged. |
 | `kit_type` | mosaic | `mosaic` (tray + tiles) or `paint_by_number` (one numbered board) |
 | `pbn_use` | engrave | Paint by number: `engrave` (laser layers plus a cut line) or `print` |
-| `pbn_min_region` | 4 | Regions smaller than this many cells merge into the neighbour they share the most border with |
+| `pbn_min_area` | 6 | Regions smaller than this (mm²) are absorbed by their neighbours |
+| `pbn_min_width` | 1.5 | Regions nowhere this wide (mm) are absorbed too: slivers and anti-aliasing fringes |
+| `pbn_simplify` | 0.05 | Outline simplification tolerance (mm, 0 = off) |
 | `pbn_smooth` | on | Round off pixel steps in the outlines (off keeps the steps) |
 | `pbn_margin` | 10 | Board border around the picture |
 | `pbn_line_width` | 0.3 | Outline width when printing |

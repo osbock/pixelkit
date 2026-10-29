@@ -15,6 +15,11 @@ export const CANVAS_FITS = ["fit", "fill"] as const;
 export const TRAY_STYLES = ["box", "layered", "none"] as const;
 export const TILE_SHEETS = ["combined", "per_color"] as const;
 export const MAX_GRID = 300; // tiles per side; beyond this the layout gets impractically slow
+export const MAX_GRID_PBN = 1500; // paint-by-number cells per side (cells aren't cut pieces)
+
+export function gridLimit(s: Settings): number {
+  return s.kit_type === "paint_by_number" ? MAX_GRID_PBN : MAX_GRID;
+}
 
 export interface Settings {
   kit_type: (typeof KIT_TYPES)[number]; // mosaic (tray + tiles) | paint_by_number (one numbered board)
@@ -45,7 +50,9 @@ export interface Settings {
   background: string;       // color behind transparent parts of the image
   colors: number;
   pbn_use: (typeof PBN_USES)[number]; // paint by number: engrave (laser layers + cut line) | print
-  pbn_min_region: number;   // regions smaller than this many cells merge into a neighbour
+  pbn_min_area: number;     // regions smaller than this (mm^2) are absorbed by their neighbours
+  pbn_min_width: number;    // ... and so are regions nowhere this wide (mm): slivers and fringes
+  pbn_simplify: number;     // outline simplification tolerance, mm (0 = off)
   pbn_smooth: boolean;      // round off pixel steps in the outlines
   pbn_margin: number;       // board border around the picture, mm
   pbn_line_width: number;   // outline width when printing, mm
@@ -88,7 +95,9 @@ export const DEFAULTS: Settings = {
   background: "#ffffff",
   colors: 8,
   pbn_use: "engrave",
-  pbn_min_region: 4,
+  pbn_min_area: 6,
+  pbn_min_width: 1.5,
+  pbn_simplify: 0.05,
   pbn_smooth: true,
   pbn_margin: 10,
   pbn_line_width: 0.3,
@@ -102,13 +111,13 @@ export const DEFAULTS: Settings = {
   name: "pixelart",
 };
 
-export const INT_FIELDS = new Set<keyof Settings>(["cols", "rows", "colors", "pbn_min_region"]);
+export const INT_FIELDS = new Set<keyof Settings>(["cols", "rows", "colors"]);
 
 /** Settings that only one kind of kit uses; the UI hides the others. */
 export const MOSAIC_ONLY = new Set<keyof Settings>(["tile_thickness", "tray_thickness", "kerf", "tile_kerf",
   "tray_style", "tile_clearance", "lip", "finger_width", "joint_play", "frame_width", "engrave_grid",
   "engrave_numbers", "spacing", "tile_border", "spare_percent", "tile_sheets", "tile_tabs", "tab_width"]);
-export const PBN_ONLY = new Set<keyof Settings>(["pbn_use", "pbn_min_region", "pbn_smooth", "pbn_margin",
+export const PBN_ONLY = new Set<keyof Settings>(["pbn_use", "pbn_min_area", "pbn_min_width", "pbn_simplify", "pbn_smooth", "pbn_margin",
   "pbn_line_width", "pbn_text_min", "pbn_text_max", "canvas", "canvas_landscape", "canvas_width", "canvas_height",
   "canvas_fit"]);
 
@@ -161,9 +170,9 @@ export function validate(s: Settings): string[] {
     }
     s = effectiveSettings(s);
     if (s.cols < 1 || s.rows < 1) problems.push("The canvas has no room for a cell inside the margin.");
-    else if (s.cols > MAX_GRID || s.rows > MAX_GRID) {
+    else if (s.cols > gridLimit(s) || s.rows > gridLimit(s)) {
       problems.push(`The canvas needs ${s.cols} x ${s.rows} cells of ${g(s.pixel)} mm; the limit is ` +
-        `${MAX_GRID} per side, so use a larger pixel size.`);
+        `${gridLimit(s)} per side, so use a larger pixel size.`);
     }
   }
   const num = (k: keyof Settings) => s[k] as number;
@@ -171,26 +180,31 @@ export function validate(s: Settings): string[] {
     if (typeof DEFAULTS[k] === "number" && !Number.isFinite(num(k))) problems.push(`${k} must be a number.`);
   }
   if (!c && (s.cols < 1 || s.rows < 1)) problems.push("Columns and rows must be at least 1.");
-  if (!c && (s.cols > MAX_GRID || s.rows > MAX_GRID)) problems.push(`Columns and rows are limited to ${MAX_GRID} tiles each.`);
+  if (!c && (s.cols > gridLimit(s) || s.rows > gridLimit(s))) {
+    problems.push(`Columns and rows are limited to ${gridLimit(s)} ${s.kit_type === "paint_by_number" ? "cells" : "tiles"} each.`);
+  }
   for (const k of ["pixel", "tile_thickness", "tray_thickness", "sheet_width", "sheet_height"] as const) {
     if (!(s[k] > 0)) problems.push(`${k} must be positive.`);
   }
-  if (s.kerf < 0 || s.kerf >= s.pixel) problems.push("Kerf must be between 0 and the pixel size.");
-  if (s.tile_kerf < -1 || s.tile_kerf >= s.pixel) problems.push("Tile kerf must be between -1 mm and the pixel size.");
+  const mosaic = s.kit_type !== "paint_by_number"; // tray and tile rules don't apply to a board
+  if (mosaic && (s.kerf < 0 || s.kerf >= s.pixel)) problems.push("Kerf must be between 0 and the pixel size.");
+  if (mosaic && (s.tile_kerf < -1 || s.tile_kerf >= s.pixel)) problems.push("Tile kerf must be between -1 mm and the pixel size.");
   if (!KIT_TYPES.includes(s.kit_type)) problems.push(`kit_type must be one of ${KIT_TYPES.join(", ")}.`);
   if (!PBN_USES.includes(s.pbn_use)) problems.push(`pbn_use must be one of ${PBN_USES.join(", ")}.`);
   if (!(CANVASES as readonly string[]).includes(s.canvas)) problems.push(`canvas must be one of ${CANVASES.join(", ")}.`);
   if (!CANVAS_FITS.includes(s.canvas_fit)) problems.push(`canvas_fit must be one of ${CANVAS_FITS.join(", ")}.`);
   if (!TRAY_STYLES.includes(s.tray_style)) problems.push(`tray_style must be one of ${TRAY_STYLES.join(", ")}.`);
   if (!TILE_SHEETS.includes(s.tile_sheets)) problems.push(`tile_sheets must be one of ${TILE_SHEETS.join(", ")}.`);
-  if (s.tile_tabs && !(s.tab_width > 0 && s.tab_width < s.pixel / 2)) {
+  if (mosaic && s.tile_tabs && !(s.tab_width > 0 && s.tab_width < s.pixel / 2)) {
     problems.push("Tab width must be more than 0 and less than half the pixel size.");
   }
-  if (s.tray_style === "box" && s.finger_width < 2 * s.kerf + 1) problems.push("Finger width is too small.");
+  if (mosaic && s.tray_style === "box" && s.finger_width < 2 * s.kerf + 1) problems.push("Finger width is too small.");
   if (!parseColor(s.background)) problems.push(`Background '${s.background}' is not a color (use e.g. #1e8cdc).`);
   if (s.kit_type === "paint_by_number") {
     if (!s.image) problems.push("Paint by number needs a picture.");
-    if (s.pbn_min_region < 1) problems.push("Min region must be at least 1 cell.");
+    if (s.pbn_min_area < 0 || s.pbn_min_width < 0 || s.pbn_simplify < 0) {
+      problems.push("Min area, min width and simplify can't be negative.");
+    }
     if (!(s.pbn_text_min > 0 && s.pbn_text_min <= s.pbn_text_max)) {
       problems.push("Number sizes must be positive, with the minimum no larger than the maximum.");
     }

@@ -105,7 +105,9 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `colors` | int | 8 | Maximum number of colors |
 | `kit_type` | choice | `mosaic` | `mosaic` (tray + tiles) or `paint_by_number` (§15) |
 | `pbn_use` | choice | `engrave` | Paint by number: `engrave` or `print` |
-| `pbn_min_region` | int | 4 | Regions smaller than this (cells) merge into a neighbour |
+| `pbn_min_area` | float | 6.0 | Regions smaller than this (mm²) are absorbed |
+| `pbn_min_width` | float | 1.5 | Regions nowhere this wide (mm) are absorbed |
+| `pbn_simplify` | float | 0.05 | Outline simplification tolerance (mm) |
 | `pbn_smooth` | bool | true | Smooth the outlines' pixel steps |
 | `pbn_margin` | float | 10.0 | Board border around the picture |
 | `pbn_line_width` | float | 0.3 | Outline width when printing |
@@ -708,7 +710,11 @@ write byte-identical SVGs and choose the same palette and grid as
   - alpha compositing with 7 precision bits;
   - the box resampling filter, which includes +0.5 and excludes −0.5, uses 22
     precision bits, and runs a horizontal pass then a vertical pass;
-  - the L conversion weights 19595/38470/7471.
+  - the L conversion weights 19595/38470/7471;
+  - nearest-neighbour resizing as `ImagingScaleAffine` does it: sample
+    positions start at scale / 2 and step by *adding* scale, a running sum,
+    then truncate. Computing (x + ½)·scale per pixel rounds differently at
+    fractional scales.
 - **A step-for-step port of Pillow's median-cut quantizer** (`libImaging/Quant.c`):
   - a hash scale that keeps it at 65,536 entries or fewer;
   - a max-heap ordered by pixel count, with Pillow's exact sift order;
@@ -782,15 +788,27 @@ then:
 
 1. **Regions:** 4-connected cells of one color, labelled in row-major
    discovery order. The flood fill visits up, down, left, right.
-2. **Small-region merging:**
-   - **What merges:** every region smaller than `pbn_min_region` cells is
-     repainted with the color of the neighbouring region it shares the most
-     cell edges with.
-   - **Ties:** the larger neighbour wins, then the lower id.
-   - **Order:** a min-heap on (size, id) processes regions smallest first,
-     skipping stale entries. A merged region joins its target, whose size
-     grows.
-   - **Why:** single-cell specks can't be painted or numbered.
+2. **Absorbing small and thin regions:**
+   - **Thresholds:**
+     min cells = max(1, ⌈min_area / pixel² − 1e-9⌉) and
+     min depth = max(1, ⌈(min_width / pixel + 1) / 2 − 1e-9⌉).
+     A region's widest square is (2·depth − 1) cells.
+   - **Removed regions:** those with fewer cells than min cells, or whose
+     deepest cell (§15.7's 8-neighbour depth) is below min depth.
+   - **Regrowth:** a 4-neighbour multi-source BFS starts from every kept cell
+     in row-major order, and each removed cell takes the color of the kept
+     region that reaches it first. If nothing or everything would be removed,
+     the grid is left unchanged.
+   - **Why:** at high resolution, JPEG artifacts and anti-aliasing leave
+     1–2-cell fringes of in-between colors along every boundary. Merging a
+     fringe whole into one neighbour would paint that color along every edge
+     it touches; growing from both sides splits it down the middle. A speck
+     inside one region simply fills in. The thresholds are in mm, so they mean
+     the same at any cell size.
+   - **Limit:** paint-by-number grids may be up to 1,500 cells per side,
+     against 300 for mosaics. Mosaic-only validation (kerf, tile kerf, tabs,
+     fingers) doesn't apply to boards, which may use cells smaller than the
+     kerf.
 3. **Renumbering:** colors are renumbered by cell count (descending, then
    RGB), as for mosaics, because merging changes the counts. Colors left with
    no cells are dropped.
@@ -812,6 +830,17 @@ then:
      at junctions and the picture border stays straight.
    - **Clean-up:** afterwards, points collinear with their neighbours are
      dropped (tolerance 1e-9).
+   - **Simplification:** Douglas–Peucker with tolerance pbn_simplify / pixel
+     (in cells):
+     - **Method:** iterative; distances are compared as c² / |ab|² against
+       tol², where c is the cross product. That avoids square roots, so both
+       versions agree to the bit. A zero-length segment uses the squared
+       distance to its start.
+     - **Closed loops:** split at the first point and the point farthest
+       from it.
+     - **Why:** fine grids make long staircase chains with tens of thousands
+       of points; a 0.05 mm tolerance cuts them a lot with no visible
+       change.
    - **Why:** smooth curves read as classic paint-by-number, and cutting only
      within half a cell keeps shapes recognisable.
 6. **Fills** (preview only):
@@ -874,7 +903,7 @@ then:
       summary and scaled PNG.
       **Why** this direction: the cell size sets how fine the painting is, so
       it stays as chosen.
-    - **Limits:** a grid over 300 per side is rejected with a canvas-specific
+    - **Limits:** a grid over 1,500 per side is rejected with a canvas-specific
       message, as is a canvas with no room for a cell.
     - **Board:** exactly W × H, with the grid centred:
       offset ((W − cols·pixel) / 2, (H − rows·pixel) / 2).
@@ -896,7 +925,8 @@ then:
         presets.
 
 **Checks:**
-- A 3 × 3 grid with one odd center cell and min region 2 merges to one color.
+- A 3 × 3 grid with one odd center cell (min cells 2) becomes one color. A
+  one-cell fringe between two wide areas is split between them.
 - On the sample JPEG at 40 × 50:
   - no region is smaller than the minimum;
   - every region has exactly one number, inside it, showing its color;
@@ -905,10 +935,11 @@ then:
 - **Parity:** board, preview, key and notes are byte-identical to
   pixelkit.py for:
   - an emoji (engrave, smoothed);
-  - pixel art (print, steps, min region 1);
+  - pixel art (print, steps, no absorbing);
   - the sample JPEG;
   - a photo-like gradient at 80 × 80;
-  - aggressive merging (min region 40, margin 0);
+  - aggressive absorbing (min area 600 mm², min width 10 mm, margin 0);
+  - a high-resolution sample JPEG on 8×10 in at 0.4 mm;
   - canvases: 8×10 in fit with an enlarged emoji, 12×16 in landscape fill,
     custom 150 × 100 mm fill, and 30×40 cm fit in print mode.
 - **Canvas grid:** 8×10 in at 3 mm gives 61 × 78 cells on a 203.2 × 254 mm

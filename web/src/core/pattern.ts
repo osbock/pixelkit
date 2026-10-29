@@ -115,14 +115,28 @@ export function boxResize(img: RGBImage, w: number, h: number): RGBImage {
   return cur;
 }
 
-/** Nearest-neighbour resize (Pillow NEAREST sampling). */
+/** Nearest-neighbour resize, as Pillow's ImagingScaleAffine: sample
+ * positions start at scale / 2 and step by adding scale (a running sum, so
+ * rounding matches Pillow exactly). */
 export function nearestResize(img: RGBImage, w: number, h: number): RGBImage {
+  const table = (inSize: number, outSize: number) => {
+    const a = inSize / outSize;
+    const out = new Int32Array(outSize);
+    let pos = a * 0.5;
+    for (let k = 0; k < outSize; k++) {
+      out[k] = Math.min(inSize - 1, Math.trunc(pos));
+      pos += a;
+    }
+    return out;
+  };
+  const xs = table(img.width, w), ys = table(img.height, h);
   const out = new Uint8Array(w * h * 3);
   for (let y = 0; y < h; y++) {
-    const sy = Math.min(img.height - 1, Math.floor(((y + 0.5) * img.height) / h));
     for (let x = 0; x < w; x++) {
-      const sx = Math.min(img.width - 1, Math.floor(((x + 0.5) * img.width) / w));
-      for (let c = 0; c < 3; c++) out[(y * w + x) * 3 + c] = img.data[(sy * img.width + sx) * 3 + c];
+      const src = (ys[y] * img.width + xs[x]) * 3, dst = (y * w + x) * 3;
+      out[dst] = img.data[src];
+      out[dst + 1] = img.data[src + 1];
+      out[dst + 2] = img.data[src + 2];
     }
   }
   return { width: w, height: h, data: out };

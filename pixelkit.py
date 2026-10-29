@@ -87,7 +87,9 @@ class Settings:
     background: str = "#ffffff"    # color behind transparent parts of the image
     colors: int = 8
     pbn_use: str = "engrave"       # paint by number: engrave (laser layers + cut line) | print
-    pbn_min_region: int = 4        # regions smaller than this many cells merge into a neighbour
+    pbn_min_area: float = 6.0      # regions smaller than this (mm^2) are absorbed by their neighbours
+    pbn_min_width: float = 1.5     # ... and so are regions nowhere this wide (mm): slivers and fringes
+    pbn_simplify: float = 0.05     # outline simplification tolerance, mm (0 = off)
     pbn_smooth: bool = True        # round off pixel steps in the outlines
     pbn_margin: float = 10.0       # board border around the picture, mm
     pbn_line_width: float = 0.3    # outline width when printing, mm
@@ -631,6 +633,11 @@ def write_svg(path, w, h, items):
 # --------------------------------------------------------------------------
 
 MAX_GRID = 300  # tiles per side; beyond this the layout gets impractically slow
+MAX_GRID_PBN = 1500  # paint-by-number cells per side (cells aren't cut pieces)
+
+
+def grid_limit(s):
+    return MAX_GRID_PBN if s.kit_type == "paint_by_number" else MAX_GRID
 
 
 # Bundled emoji (see fetch_emoji.py). An image setting of "emoji:<code> <name>",
@@ -986,47 +993,64 @@ def label_regions(grid):
     return lab, sizes
 
 
-def merge_small_regions(grid, min_size):
-    """Repaint regions smaller than min_size cells with the color of the
-    neighbour they share the longest border with (ties: larger region, then
-    lower id), smallest first. Returns (new grid, number of regions merged)."""
-    import heapq
-
+def region_depths(grid, lab):
+    """Per cell, the 8-neighbour steps to the edge of its region (1 = on the
+    edge), by multi-source BFS from edge cells in row-major order."""
     rows, cols = len(grid), len(grid[0])
-    lab, sizes = label_regions(grid)
-    colors = [0] * len(sizes)
-    cells = [[] for _ in sizes]
+    depth = [[0] * cols for _ in range(rows)]
+    queue = []
     for j in range(rows):
         for i in range(cols):
-            colors[lab[j][i]] = grid[j][i]
-            cells[lab[j][i]].append((i, j))
-    alive = [True] * len(sizes)
-    heap = [(n, rid) for rid, n in enumerate(sizes)]
-    heapq.heapify(heap)
-    merged = 0
-    while heap:
-        n, rid = heapq.heappop(heap)
-        if not alive[rid] or n != sizes[rid]:
-            continue  # stale entry
-        if n >= min_size:
-            break
-        border = {}
-        for i, j in cells[rid]:
-            for di, dj in _N4:
+            for di, dj in _N8:
                 ni, nj = i + di, j + dj
-                if 0 <= ni < cols and 0 <= nj < rows and lab[nj][ni] != rid:
-                    border[lab[nj][ni]] = border.get(lab[nj][ni], 0) + 1
-        if not border:
-            continue  # the whole picture is one region
-        target = max(border, key=lambda t: (border[t], sizes[t], -t))
-        for i, j in cells[rid]:
-            lab[j][i] = target
-        cells[target] += cells[rid]
-        sizes[target] += sizes[rid]
-        alive[rid] = False
-        merged += 1
-        heapq.heappush(heap, (sizes[target], target))
-    return [[colors[lab[j][i]] for i in range(cols)] for j in range(rows)], merged
+                if not (0 <= ni < cols and 0 <= nj < rows) or lab[nj][ni] != lab[j][i]:
+                    depth[j][i] = 1
+                    queue.append((i, j))
+                    break
+    k = 0
+    while k < len(queue):
+        i, j = queue[k]
+        k += 1
+        for di, dj in _N8:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < cols and 0 <= nj < rows and depth[nj][ni] == 0:
+                depth[nj][ni] = depth[j][i] + 1
+                queue.append((ni, nj))
+    return depth
+
+
+def absorb_small_regions(grid, min_cells, min_depth):
+    """Remove regions too small (under min_cells) or too thin (no cell
+    min_depth deep) to paint and number. Their cells go to the surrounding
+    regions, which grow into them together (4-neighbour BFS from every kept
+    cell, row-major): a speck fills in, and a fringe between two areas
+    splits down the middle. Returns (new grid, number of regions removed)."""
+    rows, cols = len(grid), len(grid[0])
+    lab, sizes = label_regions(grid)
+    depth = region_depths(grid, lab)
+    deepest = [0] * len(sizes)
+    for j in range(rows):
+        for i in range(cols):
+            if depth[j][i] > deepest[lab[j][i]]:
+                deepest[lab[j][i]] = depth[j][i]
+    keep = [sizes[r] >= min_cells and deepest[r] >= min_depth for r in range(len(sizes))]
+    removed = keep.count(False)
+    if removed == 0 or removed == len(sizes):
+        return grid, 0
+    out = [row[:] for row in grid]
+    done = [[keep[lab[j][i]] for i in range(cols)] for j in range(rows)]
+    queue = [(i, j) for j in range(rows) for i in range(cols) if done[j][i]]
+    k = 0
+    while k < len(queue):
+        i, j = queue[k]
+        k += 1
+        for di, dj in _N4:
+            ni, nj = i + di, j + dj
+            if 0 <= ni < cols and 0 <= nj < rows and not done[nj][ni]:
+                done[nj][ni] = True
+                out[nj][ni] = out[j][i]
+                queue.append((ni, nj))
+    return out, removed
 
 
 def outline_chains(grid):
@@ -1035,58 +1059,54 @@ def outline_chains(grid):
     the picture's four corners); boundaries with no junction are closed
     loops. Returns [(points, closed)]."""
     rows, cols = len(grid), len(grid[0])
+    # hor[y][x]: edge (x, y)-(x+1, y); ver[y][x]: edge (x, y)-(x, y+1)
+    hor = [[y == 0 or y == rows or grid[y - 1][x] != grid[y][x] for x in range(cols)] for y in range(rows + 1)]
+    ver = [[x == 0 or x == cols or grid[y][x - 1] != grid[y][x] for x in range(cols + 1)] for y in range(rows)]
+    nh = (rows + 1) * cols
+    seen = bytearray(nh + rows * (cols + 1))
 
-    def h_edge(x, y):  # (x, y)-(x+1, y)
-        return 0 <= x < cols and (y == 0 or y == rows or (0 < y < rows and grid[y - 1][x] != grid[y][x]))
-
-    def v_edge(x, y):  # (x, y)-(x, y+1)
-        return 0 <= y < rows and (x == 0 or x == cols or (0 < x < cols and grid[y][x - 1] != grid[y][x]))
-
-    def links(x, y):  # incident edges in fixed order: right, down, left, up
+    def links(x, y):  # incident edges (id, far end) in fixed order: right, down, left, up
         out = []
-        if h_edge(x, y):
-            out.append((("h", x, y), (x + 1, y)))
-        if v_edge(x, y):
-            out.append((("v", x, y), (x, y + 1)))
-        if h_edge(x - 1, y):
-            out.append((("h", x - 1, y), (x - 1, y)))
-        if v_edge(x, y - 1):
-            out.append((("v", x, y - 1), (x, y - 1)))
+        if x < cols and hor[y][x]:
+            out.append((y * cols + x, (x + 1, y)))
+        if y < rows and ver[y][x]:
+            out.append((nh + y * (cols + 1) + x, (x, y + 1)))
+        if x > 0 and hor[y][x - 1]:
+            out.append((y * cols + x - 1, (x - 1, y)))
+        if y > 0 and ver[y - 1][x]:
+            out.append((nh + (y - 1) * (cols + 1) + x, (x, y - 1)))
         return out
 
-    corners = {(0, 0), (cols, 0), (0, rows), (cols, rows)}
-
     def junction(x, y):
-        return (x, y) in corners or len(links(x, y)) not in (0, 2)
+        return ((x == 0 or x == cols) and (y == 0 or y == rows)) or len(links(x, y)) not in (0, 2)
 
-    seen = set()
     chains = []
 
     def walk(start, edge, nxt):
         pts = [start]
-        seen.add(edge)
+        seen[edge] = 1
         cur = nxt
         while True:
             pts.append(cur)
             if junction(*cur) or cur == start:
                 return pts
-            follow = [(e, n) for e, n in links(*cur) if e not in seen]
+            follow = [(e, n) for e, n in links(*cur) if not seen[e]]
             if not follow:
                 return pts
             e, n = follow[0]
-            seen.add(e)
+            seen[e] = 1
             cur = n
 
     for y in range(rows + 1):
         for x in range(cols + 1):
             if junction(x, y):
                 for e, n in links(x, y):
-                    if e not in seen:
+                    if not seen[e]:
                         chains.append((walk((x, y), e, n), False))
     for y in range(rows + 1):
         for x in range(cols + 1):
             for e, n in links(x, y):
-                if e not in seen:
+                if not seen[e]:
                     pts = walk((x, y), e, n)
                     chains.append((pts[:-1], True))  # last point repeats the start
     return chains
@@ -1142,6 +1162,57 @@ def drop_collinear(pts, closed):
     return out
 
 
+def _dp(pts, tol2):
+    """Douglas-Peucker on an open polyline with squared tolerance tol2,
+    keeping both ends (iterative, so long chains don't recurse deeply)."""
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        ax, ay = pts[a]
+        bx, by = pts[b]
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        best, far = -1, -1.0
+        for k in range(a + 1, b):
+            px, py = pts[k]
+            if l2 == 0:
+                d = (px - ax) * (px - ax) + (py - ay) * (py - ay)
+            else:
+                c = dx * (ay - py) - (ax - px) * dy
+                d = c * c / l2
+            if d > far:
+                far, best = d, k
+        if far > tol2:
+            keep[best] = True
+            stack.append((a, best))
+            stack.append((best, b))
+    return [p for p, k in zip(pts, keep) if k]
+
+
+def simplify_chain(pts, closed, tol):
+    """Drop points within tol of the simplified line (Douglas-Peucker). A
+    closed loop is split at its first point and the point farthest from it."""
+    if tol <= 0 or len(pts) < 3:
+        return list(pts)
+    tol2 = tol * tol
+    if not closed:
+        return _dp(pts, tol2)
+    ax, ay = pts[0]
+    far, best = -1.0, 0
+    for k in range(1, len(pts)):
+        d = (pts[k][0] - ax) * (pts[k][0] - ax) + (pts[k][1] - ay) * (pts[k][1] - ay)
+        if d > far:
+            far, best = d, k
+    first = _dp(pts[:best + 1], tol2)
+    second = _dp(pts[best:] + [pts[0]], tol2)
+    out = first[:-1] + second[:-1]
+    return out if len(out) >= 3 else list(pts)
+
+
 def chain_sides(chain, labels):
     """Region ids on the two sides of a chain's first edge (-1 off the grid):
     side A lies along the normal (dy, -dx) of travel, side B opposite."""
@@ -1194,25 +1265,7 @@ def number_spots(grid):
     then row-major order. Returns [(i, j, depth, color)] in region order."""
     rows, cols = len(grid), len(grid[0])
     lab, sizes = label_regions(grid)
-    depth = [[0] * cols for _ in range(rows)]
-    queue = []
-    for j in range(rows):
-        for i in range(cols):
-            for di, dj in _N8:
-                ni, nj = i + di, j + dj
-                if not (0 <= ni < cols and 0 <= nj < rows) or lab[nj][ni] != lab[j][i]:
-                    depth[j][i] = 1
-                    queue.append((i, j))
-                    break
-    k = 0
-    while k < len(queue):
-        i, j = queue[k]
-        k += 1
-        for di, dj in _N8:
-            ni, nj = i + di, j + dj
-            if 0 <= ni < cols and 0 <= nj < rows and depth[nj][ni] == 0:
-                depth[nj][ni] = depth[j][i] + 1
-                queue.append((ni, nj))
+    depth = region_depths(grid, lab)
     sx = [0.0] * len(sizes)
     sy = [0.0] * len(sizes)
     for j in range(rows):
@@ -1266,7 +1319,10 @@ def pbn_layout(s, cols, rows):
 def build_pbn(s, pattern):
     """Paint-by-number board from a pattern. Returns (board piece, width,
     height, merged pattern, regions per color, notes)."""
-    grid, merged = merge_small_regions(pattern["grid"], max(1, s.pbn_min_region))
+    p = s.pixel
+    min_cells = max(1, math.ceil(s.pbn_min_area / (p * p) - 1e-9))
+    min_depth = max(1, math.ceil((s.pbn_min_width / p + 1) / 2 - 1e-9))  # widest square (2d - 1) cells
+    grid, merged = absorb_small_regions(pattern["grid"], min_cells, min_depth)
     # Renumber colors by tile count, as for mosaics (merging changes counts).
     counts = defaultdict(int)
     for row in grid:
@@ -1279,7 +1335,6 @@ def build_pbn(s, pattern):
                       "counts": [counts[i] for i in order], "grid": grid}
 
     rows, cols = len(grid), len(grid[0])
-    p = s.pixel
     w, h, ox, oy = pbn_layout(s, cols, rows)
     engrave = s.pbn_use == "engrave"
     board = Piece("paint_by_number")
@@ -1294,7 +1349,7 @@ def build_pbn(s, pattern):
     for pts, closed in chains:
         if s.pbn_smooth:
             pts = smooth_chain(pts, closed)
-        shaped.append((drop_collinear(pts, closed), closed))
+        shaped.append((simplify_chain(drop_collinear(pts, closed), closed, s.pbn_simplify / p), closed))
     to_mm = lambda pts: [(ox + x * p, oy + y * p) for x, y in pts]
     board.engraves = [(to_mm(pts), closed) for pts, closed in shaped]
     # Fills for the color preview: each color's region outlines as one path.
@@ -1324,7 +1379,8 @@ def build_pbn(s, pattern):
     notes = [
         f"Paint by number: {cols} x {rows} cells at {s.pixel:g} mm, board {w:.0f} x {h:.0f} mm "
         f"({s.pbn_use}); {sum(regions)} regions in {len(order)} colors"
-        + (f", {merged} region(s) under {s.pbn_min_region} cells merged into a neighbour" if merged else ""),
+        + (f", {merged} region(s) smaller than {s.pbn_min_area:g} mm\u00b2 or narrower than {s.pbn_min_width:g} mm "
+           "absorbed by their neighbours" if merged else ""),
     ]
     c = canvas_mm(s)
     if c:
@@ -1333,7 +1389,7 @@ def build_pbn(s, pattern):
                      f"with {ox:.1f} / {oy:.1f} mm side / top margins.")
     if tight:
         notes.append(f"{tight} region(s) are too small for a {s.pbn_text_min:g} mm number; "
-                     "their numbers overlap the outlines. Raise Min region or use more cells.")
+                     "their numbers overlap the outlines. Raise Min area or Min width.")
     if engrave:
         notes.append(f"Layers: {PBN_LINE} = region outlines, {PBN_NUMBER} = numbers, {CUT} = board cut line.")
     else:
@@ -1428,26 +1484,28 @@ def validate(s):
         s = effective_settings(s)
         if s.cols < 1 or s.rows < 1:
             problems.append("The canvas has no room for a cell inside the margin.")
-        elif s.cols > MAX_GRID or s.rows > MAX_GRID:
+        elif s.cols > grid_limit(s) or s.rows > grid_limit(s):
             problems.append(f"The canvas needs {s.cols} x {s.rows} cells of {s.pixel:g} mm; the limit is "
-                            f"{MAX_GRID} per side, so use a larger pixel size.")
+                            f"{grid_limit(s)} per side, so use a larger pixel size.")
     if not c and (s.cols < 1 or s.rows < 1):
         problems.append("Columns and rows must be at least 1.")
-    if not c and (s.cols > MAX_GRID or s.rows > MAX_GRID):
-        problems.append(f"Columns and rows are limited to {MAX_GRID} tiles each.")
+    if not c and (s.cols > grid_limit(s) or s.rows > grid_limit(s)):
+        problems.append(f"Columns and rows are limited to {grid_limit(s)} "
+                        f"{'cells' if s.kit_type == 'paint_by_number' else 'tiles'} each.")
     for k in ("pixel", "tile_thickness", "tray_thickness", "sheet_width", "sheet_height"):
         if getattr(s, k) <= 0:
             problems.append(f"{k} must be positive.")
-    if s.kerf < 0 or s.kerf >= s.pixel:
+    mosaic = s.kit_type != "paint_by_number"  # tray and tile rules don't apply to a board
+    if mosaic and (s.kerf < 0 or s.kerf >= s.pixel):
         problems.append("Kerf must be between 0 and the pixel size.")
-    if s.tile_kerf < -1 or s.tile_kerf >= s.pixel:
+    if mosaic and (s.tile_kerf < -1 or s.tile_kerf >= s.pixel):
         problems.append("Tile kerf must be between -1 mm and the pixel size.")
     for key, options in CHOICES.items():
         if getattr(s, key) not in options:
             problems.append(f"{key} must be one of {options}.")
-    if s.tile_tabs and not 0 < s.tab_width < s.pixel / 2:
+    if mosaic and s.tile_tabs and not 0 < s.tab_width < s.pixel / 2:
         problems.append("Tab width must be more than 0 and less than half the pixel size.")
-    if s.tray_style == "box" and s.finger_width < 2 * s.kerf + 1:
+    if mosaic and s.tray_style == "box" and s.finger_width < 2 * s.kerf + 1:
         problems.append("Finger width is too small.")
     try:
         from PIL import ImageColor
@@ -1459,8 +1517,8 @@ def validate(s):
     if s.kit_type == "paint_by_number":
         if not s.image:
             problems.append("Paint by number needs a picture.")
-        if s.pbn_min_region < 1:
-            problems.append("Min region must be at least 1 cell.")
+        if s.pbn_min_area < 0 or s.pbn_min_width < 0 or s.pbn_simplify < 0:
+            problems.append("Min area, min width and simplify can't be negative.")
         if not 0 < s.pbn_text_min <= s.pbn_text_max:
             problems.append("Number sizes must be positive, with the minimum no larger than the maximum.")
         if s.pbn_line_width <= 0 or s.pbn_margin < 0:
@@ -1697,7 +1755,8 @@ FORM = [
     ("Paint by number", [("canvas", "Canvas"), ("canvas_landscape", "Landscape canvas"),
                          ("canvas_width", "Custom width (mm)"), ("canvas_height", "Custom height (mm)"),
                          ("canvas_fit", "Picture fit"),
-                         ("pbn_use", "Board use"), ("pbn_min_region", "Min region (cells)"),
+                         ("pbn_use", "Board use"), ("pbn_min_area", "Min area (mm\u00b2)"),
+                         ("pbn_min_width", "Min width (mm)"), ("pbn_simplify", "Simplify (mm)"),
                          ("pbn_smooth", "Smooth outlines"), ("pbn_margin", "Board margin (mm)"),
                          ("pbn_line_width", "Print line width (mm)"), ("pbn_text_min", "Min number (mm)"),
                          ("pbn_text_max", "Max number (mm)")]),
@@ -1767,7 +1826,7 @@ def run_gui():
         except Exception as e:
             messagebox.showerror("Image", str(e))
             return
-        if found and max(found) <= MAX_GRID:
+        if found and max(found) <= grid_limit(read_settings()):
             cols, rows = found
             msg = f"Detected a {cols} x {rows} pixel-art grid in the {w} x {h} px image."
         else:
@@ -1943,11 +2002,18 @@ def run_gui():
                 ux, uy = (x1 - x0) / nc, (y1 - y0) / nc
                 vx, vy = (x2 - x0) / nr, (y2 - y0) / nr
                 for j, row in enumerate(pattern["grid"]):
-                    for i, idx in enumerate(row):
+                    i = 0
+                    while i < nc:  # one polygon per run of equal color
+                        e = i
+                        while e + 1 < nc and row[e + 1] == row[i]:
+                            e += 1
                         cx, cy = x0 + i * ux + j * vx, y0 + i * uy + j * vy
-                        quad = [(cx, cy), (cx + ux, cy + uy), (cx + ux + vx, cy + uy + vy), (cx + vx, cy + vy)]
+                        n = e - i + 1
+                        quad = [(cx, cy), (cx + n * ux, cy + n * uy), (cx + n * ux + vx, cy + n * uy + vy),
+                                (cx + vx, cy + vy)]
                         canvas.create_polygon(*[c for x, y in quad for c in (ox + x * k, oy + y * k)],
-                                              fill=hexcolor(pattern["palette"][idx]), outline="")
+                                              fill=hexcolor(pattern["palette"][row[i]]), outline="")
+                        i = e + 1
             line = "#2b4fd6" if getattr(pc, "line_color", ENGRAVE) == ENGRAVE else "#222222"
             for color, polys in ((line, pc.engraves), ("#d62b2b", pc.cuts)):
                 for pts, closed in polys:
@@ -1997,6 +2063,10 @@ def run_gui():
         state["after"] = None
         try:
             s = read_settings()
+            e = effective_settings(s)
+            if quiet and e.kit_type == "paint_by_number" and e.cols * e.rows > LARGE_BOARD:
+                log.set(f"Large board ({e.cols} x {e.rows} cells): press Preview to update it.")
+                return
             sheets, pattern, _, notes = build(s)
         except Exception as e:
             if quiet:
@@ -2028,6 +2098,8 @@ def run_gui():
 
     last_dir = {"path": None}
 
+    LARGE_BOARD = 250_000  # cells; bigger paint-by-number boards preview only on request
+
     def edit_pixels():
         """Pop-out editor: paint tiles with the mosaic's own colors, then save
         over <picture>_scaled.png and make that the image."""
@@ -2040,6 +2112,10 @@ def run_gui():
         palette = pattern["palette"]
         grid = [row[:] for row in pattern["grid"]]
         rows, cols = len(grid), len(grid[0])
+        if rows * cols > 120_000:
+            messagebox.showinfo("Edit pixels", f"The {cols} x {rows} grid is too large to edit here. Generate the "
+                                "kit and edit <picture>_scaled.png in an image editor, or use the web version.")
+            return
         cell = max(4, min(28, 720 // max(cols, rows)))
         ed = {"color": 0, "stroke": None, "undo": [], "dirty": False}
 
