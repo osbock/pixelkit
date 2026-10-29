@@ -1,7 +1,17 @@
 // Kit settings: same names, defaults and rules as pixelkit.py (spec.md §4).
 
+import { g } from "./py";
+
 export const KIT_TYPES = ["mosaic", "paint_by_number"] as const;
 export const PBN_USES = ["engrave", "print"] as const;
+// Paint-by-number canvas presets, portrait [width, height] in mm.
+export const CANVAS_SIZES: Record<string, [number, number]> = {
+  "8x10in": [203.2, 254.0], "11x14in": [279.4, 355.6], "12x12in": [304.8, 304.8],
+  "12x16in": [304.8, 406.4], "16x20in": [406.4, 508.0], "18x24in": [457.2, 609.6],
+  "20x30cm": [200.0, 300.0], "30x40cm": [300.0, 400.0], "40x50cm": [400.0, 500.0],
+};
+export const CANVASES = ["off", "custom", ...Object.keys(CANVAS_SIZES)] as const;
+export const CANVAS_FITS = ["fit", "fill"] as const;
 export const TRAY_STYLES = ["box", "layered", "none"] as const;
 export const TILE_SHEETS = ["combined", "per_color"] as const;
 export const MAX_GRID = 300; // tiles per side; beyond this the layout gets impractically slow
@@ -41,6 +51,11 @@ export interface Settings {
   pbn_line_width: number;   // outline width when printing, mm
   pbn_text_min: number;     // smallest number, mm
   pbn_text_max: number;     // largest number, mm
+  canvas: string;           // paint by number: board size preset, "custom", or "off" (size from the grid)
+  canvas_landscape: boolean; // turn a preset canvas sideways
+  canvas_width: number;     // custom canvas, mm
+  canvas_height: number;
+  canvas_fit: (typeof CANVAS_FITS)[number]; // fit: whole picture, padded | fill: cover, cropping overflow
   name: string;             // prefix for output file names
 }
 
@@ -79,6 +94,11 @@ export const DEFAULTS: Settings = {
   pbn_line_width: 0.3,
   pbn_text_min: 2,
   pbn_text_max: 6,
+  canvas: "off",
+  canvas_landscape: false,
+  canvas_width: 203.2,
+  canvas_height: 254.0,
+  canvas_fit: "fit",
   name: "pixelart",
 };
 
@@ -89,7 +109,26 @@ export const MOSAIC_ONLY = new Set<keyof Settings>(["tile_thickness", "tray_thic
   "tray_style", "tile_clearance", "lip", "finger_width", "joint_play", "frame_width", "engrave_grid",
   "engrave_numbers", "spacing", "tile_border", "spare_percent", "tile_sheets", "tile_tabs", "tab_width"]);
 export const PBN_ONLY = new Set<keyof Settings>(["pbn_use", "pbn_min_region", "pbn_smooth", "pbn_margin",
-  "pbn_line_width", "pbn_text_min", "pbn_text_max"]);
+  "pbn_line_width", "pbn_text_min", "pbn_text_max", "canvas", "canvas_landscape", "canvas_width", "canvas_height",
+  "canvas_fit"]);
+
+/** [width, height] of the paint-by-number canvas in mm, or null when the
+ * board is sized from the grid. */
+export function canvasMm(s: Settings): [number, number] | null {
+  if (s.kit_type !== "paint_by_number" || s.canvas === "off") return null;
+  if (s.canvas === "custom") return [s.canvas_width, s.canvas_height];
+  const [w, h] = CANVAS_SIZES[s.canvas] ?? [0, 0];
+  return s.canvas_landscape ? [h, w] : [w, h];
+}
+
+/** Settings with columns and rows worked out from the canvas, when one is
+ * set: as many cells of the chosen size as fit inside the margin. */
+export function effectiveSettings(s: Settings): Settings {
+  const c = canvasMm(s);
+  if (!c) return s;
+  const fit = (len: number) => (s.pixel > 0 ? Math.floor((len - 2 * s.pbn_margin) / s.pixel) : 0);
+  return { ...s, cols: fit(c[0]), rows: fit(c[1]) };
+}
 
 export function withDefaults(partial: Partial<Settings>): Settings {
   return { ...DEFAULTS, ...partial };
@@ -115,12 +154,24 @@ export function parseColor(text: string): [number, number, number] | null {
 /** Every problem with the settings; empty when they are usable. */
 export function validate(s: Settings): string[] {
   const problems: string[] = [];
+  const c = canvasMm(s);
+  if (c) {
+    if (s.canvas === "custom" && !(s.canvas_width > 0 && s.canvas_height > 0)) {
+      problems.push("Custom canvas width and height must be positive.");
+    }
+    s = effectiveSettings(s);
+    if (s.cols < 1 || s.rows < 1) problems.push("The canvas has no room for a cell inside the margin.");
+    else if (s.cols > MAX_GRID || s.rows > MAX_GRID) {
+      problems.push(`The canvas needs ${s.cols} x ${s.rows} cells of ${g(s.pixel)} mm; the limit is ` +
+        `${MAX_GRID} per side, so use a larger pixel size.`);
+    }
+  }
   const num = (k: keyof Settings) => s[k] as number;
   for (const k of Object.keys(DEFAULTS) as (keyof Settings)[]) {
     if (typeof DEFAULTS[k] === "number" && !Number.isFinite(num(k))) problems.push(`${k} must be a number.`);
   }
-  if (s.cols < 1 || s.rows < 1) problems.push("Columns and rows must be at least 1.");
-  if (s.cols > MAX_GRID || s.rows > MAX_GRID) problems.push(`Columns and rows are limited to ${MAX_GRID} tiles each.`);
+  if (!c && (s.cols < 1 || s.rows < 1)) problems.push("Columns and rows must be at least 1.");
+  if (!c && (s.cols > MAX_GRID || s.rows > MAX_GRID)) problems.push(`Columns and rows are limited to ${MAX_GRID} tiles each.`);
   for (const k of ["pixel", "tile_thickness", "tray_thickness", "sheet_width", "sheet_height"] as const) {
     if (!(s[k] > 0)) problems.push(`${k} must be positive.`);
   }
@@ -128,6 +179,8 @@ export function validate(s: Settings): string[] {
   if (s.tile_kerf < -1 || s.tile_kerf >= s.pixel) problems.push("Tile kerf must be between -1 mm and the pixel size.");
   if (!KIT_TYPES.includes(s.kit_type)) problems.push(`kit_type must be one of ${KIT_TYPES.join(", ")}.`);
   if (!PBN_USES.includes(s.pbn_use)) problems.push(`pbn_use must be one of ${PBN_USES.join(", ")}.`);
+  if (!(CANVASES as readonly string[]).includes(s.canvas)) problems.push(`canvas must be one of ${CANVASES.join(", ")}.`);
+  if (!CANVAS_FITS.includes(s.canvas_fit)) problems.push(`canvas_fit must be one of ${CANVAS_FITS.join(", ")}.`);
   if (!TRAY_STYLES.includes(s.tray_style)) problems.push(`tray_style must be one of ${TRAY_STYLES.join(", ")}.`);
   if (!TILE_SHEETS.includes(s.tile_sheets)) problems.push(`tile_sheets must be one of ${TILE_SHEETS.join(", ")}.`);
   if (s.tile_tabs && !(s.tab_width > 0 && s.tab_width < s.pixel / 2)) {

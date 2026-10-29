@@ -326,18 +326,47 @@ export function reduceColors(pixels: number[], maxColors: number, mergeDist = 24
  * keeping its aspect ratio; one that already fits is used 1:1. Leftover
  * rows/columns are filled with the most common border color. When scaling
  * down, each tile takes the majority color of its area. */
-export function loadPattern(img: RGBImage, cols: number, rows: number, maxColors: number, label: string): Pattern {
-  const w = img.width, h = img.height;
+export function cropImage(img: RGBImage, x0: number, y0: number, w: number, h: number): RGBImage {
+  const out = new Uint8Array(w * h * 3);
+  for (let y = 0; y < h; y++) {
+    out.set(img.data.subarray(((y0 + y) * img.width + x0) * 3, ((y0 + y) * img.width + x0 + w) * 3), y * w * 3);
+  }
+  return { width: w, height: h, data: out };
+}
+
+/** For canvases, fit="fit" also enlarges a small picture (nearest pixel, so
+ * colors stay flat) until it fits, and fit="fill" first crops the picture,
+ * centred, to the grid's shape so it covers the whole grid. */
+export function loadPattern(img: RGBImage, cols: number, rows: number, maxColors: number, label: string,
+  fit: "fit" | "fill" | null = null): Pattern {
+  let w = img.width, h = img.height;
   let note = `Pattern: ${label} ${w} x ${h} px`;
+  let im = img;
+  if (fit === "fill" && w * rows !== h * cols) {
+    if (w * rows > h * cols) { // wider than the grid
+      const cw = Math.max(1, pyRound((h * cols) / rows));
+      im = cropImage(im, Math.floor((w - cw) / 2), 0, cw, h);
+    } else {
+      const ch = Math.max(1, pyRound((w * rows) / cols));
+      im = cropImage(im, 0, Math.floor((h - ch) / 2), w, ch);
+    }
+    w = im.width;
+    h = im.height;
+    note += ` cropped to ${w} x ${h}`;
+  }
   const scale = Math.min(cols / w, rows / h);
   let nw = w, nh = h, sub = 1; // sub = samples per tile side for the majority vote
-  let im = img;
   if (scale < 1) {
-    nw = Math.min(cols, Math.max(1, pyRound(w * scale)));
-    nh = Math.min(rows, Math.max(1, pyRound(h * scale)));
+    nw = fit === "fill" ? cols : Math.min(cols, Math.max(1, pyRound(w * scale)));
+    nh = fit === "fill" ? rows : Math.min(rows, Math.max(1, pyRound(h * scale)));
     sub = Math.max(1, Math.min(8, Math.floor(Math.min(w / nw, h / nh))));
-    im = boxResize(img, nw * sub, nh * sub);
+    im = boxResize(im, nw * sub, nh * sub);
     note += ` scaled to ${nw} x ${nh} (majority color per tile)`;
+  } else if (scale > 1 && fit) {
+    nw = fit === "fill" ? cols : Math.min(cols, Math.max(1, pyRound(w * scale)));
+    nh = fit === "fill" ? rows : Math.min(rows, Math.max(1, pyRound(h * scale)));
+    im = nearestResize(im, nw, nh);
+    note += ` enlarged to ${nw} x ${nh} (nearest pixel)`;
   }
   const raw: number[] = new Array(im.width * im.height);
   for (let i = 0; i < raw.length; i++) raw[i] = pack(im.data[i * 3], im.data[i * 3 + 1], im.data[i * 3 + 2]);

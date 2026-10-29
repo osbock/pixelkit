@@ -113,6 +113,18 @@ side) give the most natural results.
   approval.
 - **Scaled image** and **notes file**, as for mosaics.
 
+**Canvas sizes.** Pick a **Canvas** to make the board exactly that size,
+for example 8 × 10 in, for pre-cut boards or canvas panels:
+- The cell size stays as you set it, and as many cells fit as the canvas allows
+  inside the margin. The grid is centred on the canvas, and Columns and Rows
+  show the computed grid.
+- **Picture fit** controls how the picture sits:
+  - **Fit** shows the whole picture, with leftover space in the background
+    color.
+  - **Fill** covers the canvas and trims the overflow.
+- In canvas mode, small pictures such as emoji are enlarged (nearest pixel,
+  so colors stay flat), as well as shrunk, to fit.
+
 No tray, tile or kerf-test files are made, and the settings that only
 mosaics use are hidden (web) or greyed out (desktop). The board is not packed
 onto sheets: it is one piece, and the notes warn if it is larger than the
@@ -199,6 +211,10 @@ All lengths are in mm.
 | `pbn_margin` | 10 | Board border around the picture |
 | `pbn_line_width` | 0.3 | Outline width when printing |
 | `pbn_text_min`, `pbn_text_max` | 2, 6 | Smallest and largest number size |
+| `canvas` | off | Paint by number: a board size preset (`8x10in`, `11x14in`, `12x12in`, `12x16in`, `16x20in`, `18x24in`, `20x30cm`, `30x40cm`, `40x50cm`), `custom`, or `off` to size the board from the grid |
+| `canvas_landscape` | off | Turn a preset sideways |
+| `canvas_width`, `canvas_height` | 203.2, 254 | Custom canvas size |
+| `canvas_fit` | fit | `fit`: the whole picture, with leftover space in the background color; `fill`: cover the canvas, cropping the overflow (centred) |
 
 **Pictures larger than the grid** are scaled down to fit without distortion,
 and any leftover rows or columns are filled with the picture's border color.

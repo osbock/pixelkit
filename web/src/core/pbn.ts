@@ -5,7 +5,7 @@
 import { Piece, type Pt, rectPts } from "./geometry";
 import type { Pattern } from "./pattern";
 import { cmp, fixed, g } from "./py";
-import type { Settings } from "./settings";
+import { canvasMm, type Settings } from "./settings";
 import { CUT, esc, hexcolor, STROKE, textColor } from "./svg";
 
 export const PBN_LINE = "#0000ff";   // region outlines (LightBurn layer 01)
@@ -346,6 +346,14 @@ export class Board extends Piece {
   fills: Pt[][][] = [];
 }
 
+/** Board size and picture offset: the canvas with the grid centred on it,
+ * or the grid plus the margin. */
+export function pbnLayout(s: Settings, cols: number, rows: number): [number, number, number, number] {
+  const c = canvasMm(s), p = s.pixel;
+  if (c) return [c[0], c[1], (c[0] - cols * p) / 2, (c[1] - rows * p) / 2];
+  return [cols * p + 2 * s.pbn_margin, rows * p + 2 * s.pbn_margin, s.pbn_margin, s.pbn_margin];
+}
+
 export interface PbnResult { board: Board; w: number; h: number; pattern: Pattern; regions: number[]; notes: string[] }
 
 export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
@@ -362,20 +370,20 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
   };
 
   const rows = grid.length, cols = grid[0].length;
-  const p = s.pixel, mg = s.pbn_margin;
-  const w = cols * p + 2 * mg, h = rows * p + 2 * mg;
+  const p = s.pixel;
+  const [w, h, ox, oy] = pbnLayout(s, cols, rows);
   const engrave = s.pbn_use === "engrave";
   const board = new Board("paint_by_number");
   board.lineColor = engrave ? PBN_LINE : PBN_PRINT_LINE;
   board.textColor = engrave ? PBN_NUMBER : PBN_PRINT_NUMBER;
   board.lineWidth = engrave ? STROKE : s.pbn_line_width;
-  board.picture = [[mg, mg], [mg + cols * p, mg], [mg, mg + rows * p]];
+  board.picture = [[ox, oy], [ox + cols * p, oy], [ox, oy + rows * p]];
   const { labels, sizes } = labelRegions(grid);
   const chains = outlineChains(grid);
   const sides = chains.map((c) => chainSides(c.pts, labels));
   const shaped: Chain[] = chains.map(({ pts, closed }) =>
     ({ pts: dropCollinear(s.pbn_smooth ? smoothChain(pts, closed) : pts, closed), closed }));
-  const toMm = (pts: Pt[]): Pt[] => pts.map(([x, y]) => [mg + x * p, mg + y * p]);
+  const toMm = (pts: Pt[]): Pt[] => pts.map(([x, y]) => [ox + x * p, oy + y * p]);
   board.engraves = shaped.map(({ pts, closed }) => ({ pts: toMm(pts), closed }));
   // Fills for the color preview: each color's region outlines as one path.
   const regionColor = sizes.map(() => 0);
@@ -396,7 +404,7 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
       size = s.pbn_text_min;
       tight++;
     }
-    const cx = mg + (i + 0.5) * p, cy = mg + (j + 0.5) * p;
+    const cx = ox + (i + 0.5) * p, cy = oy + (j + 0.5) * p;
     board.texts.push({ x: cx, y: cy + size * 0.35, size, text, angle: 0, anchor: "middle" });
   }
   if (engrave) board.cuts.push({ pts: rectPts(0, 0, w, h), closed: true });
@@ -407,6 +415,12 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
       `(${s.pbn_use}); ${total} regions in ${order.length} colors` +
       (merged ? `, ${merged} region(s) under ${s.pbn_min_region} cells merged into a neighbour` : ""),
   ];
+  const c = canvasMm(s);
+  if (c) {
+    const name = s.canvas === "custom" ? "custom" : s.canvas + (s.canvas_landscape ? " landscape" : "");
+    notes.push(`Canvas ${name}: ${g(c[0])} x ${g(c[1])} mm, picture ${s.canvas_fit}, grid centred ` +
+      `with ${fixed(ox, 1)} / ${fixed(oy, 1)} mm side / top margins.`);
+  }
   if (tight) {
     notes.push(`${tight} region(s) are too small for a ${g(s.pbn_text_min)} mm number; ` +
       "their numbers overlap the outlines. Raise Min region or use more cells.");

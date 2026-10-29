@@ -11,7 +11,7 @@ import {
 import { composite, loadPattern, type Pattern, type RGBAImage, scaledImage } from "./pattern";
 import { type Board, buildPbn, pbnKeySvg, pbnPreviewSvg, pbnSvg } from "./pbn";
 import { fixed, g } from "./py";
-import { parseColor, type Settings, validate } from "./settings";
+import { canvasMm, effectiveSettings, parseColor, type Settings, validate } from "./settings";
 import { hexcolor, patternSvg, sheetSvg } from "./svg";
 
 export interface SheetOut { stem: string; w: number; h: number; items: Piece[] }
@@ -28,7 +28,9 @@ export class SettingsError extends Error {}
 /** The tile grid for s.image, given its decoded pixels. */
 export function patternFor(s: Settings, picture: RGBAImage): Pattern {
   const label = isEmoji(s.image) ? `emoji:${emojiCode(s.image)}` : "image";
-  const pattern = loadPattern(composite(picture, parseColor(s.background)!), s.cols, s.rows, s.colors, label);
+  const fit = canvasMm(s) ? s.canvas_fit : null;
+  const e = effectiveSettings(s);
+  const pattern = loadPattern(composite(picture, parseColor(s.background)!), e.cols, e.rows, s.colors, label, fit);
   pattern.source = isEmoji(s.image) ? s.image : (picture.source ?? "");
   return pattern;
 }
@@ -45,6 +47,7 @@ export function build(s: Settings, picture: RGBAImage | null, pattern: Pattern |
   if (problems.length) throw new SettingsError(problems.join("\n"));
   if (!s.image) pattern = null;
   else if (!pattern && picture) pattern = patternFor(s, picture);
+  s = effectiveSettings(s);
   const notes: string[] = pattern ? [pattern.note] : [];
   if (needsEmojiCredit(pattern)) notes.push(EMOJI_CREDIT);
   const sheets: SheetOut[] = [];
@@ -100,8 +103,17 @@ function tileCount(block: Piece, s: Settings): number {
 }
 
 export function summary(s: Settings): string {
+  s = effectiveSettings(s);
   if (s.kit_type === "paint_by_number") {
     const mg = s.pbn_margin;
+    const c = canvasMm(s);
+    if (c) {
+      const turned = s.canvas_landscape && s.canvas !== "custom" ? " landscape" : "";
+      return [
+        `Picture: ${s.cols} x ${s.rows} = ${s.cols * s.rows} cells, ${g(s.cols * s.pixel)} x ${g(s.rows * s.pixel)} mm (${s.canvas_fit})`,
+        `Canvas ${s.canvas}${turned}: ${fixed(c[0], 1)} x ${fixed(c[1], 1)} mm, ${g(mg)} mm minimum margin`,
+      ].join("\n");
+    }
     return [
       `Picture: ${s.cols} x ${s.rows} = ${s.cols * s.rows} cells, ${g(s.cols * s.pixel)} x ${g(s.rows * s.pixel)} mm`,
       `Paint-by-number board (${s.pbn_use}): ${fixed(s.cols * s.pixel + 2 * mg, 1)} x ` +
@@ -149,6 +161,7 @@ export function scaledImageName(s: Settings): string {
 /** Every output file of a kit, plus the build (for previews and notes). */
 export function generate(s: Settings, picture: RGBAImage | null, pattern: Pattern | null = null): { files: OutFile[]; build: Build } {
   const b = build(s, picture, pattern);
+  s = effectiveSettings(s);
   const pbn = s.kit_type === "paint_by_number";
   const files: OutFile[] = [];
   for (const sh of b.sheets) {

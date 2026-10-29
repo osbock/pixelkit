@@ -4,7 +4,7 @@ import { EmojiSet, emojiCode, isEmoji } from "../core/emoji";
 import { build, generate, kerfTest, type SheetOut, patternFor, scaledImageName, summary } from "../core/kit";
 import { composite, detectGrid, type Pattern, type RGBAImage, scaledImage } from "../core/pattern";
 import {
-  DEFAULTS, INT_FIELDS, KIT_TYPES, MAX_GRID, MOSAIC_ONLY, parseColor, PBN_ONLY, PBN_USES, type Settings, TILE_SHEETS,
+  CANVAS_FITS, CANVASES, canvasMm, DEFAULTS, effectiveSettings, INT_FIELDS, KIT_TYPES, MAX_GRID, MOSAIC_ONLY, parseColor, PBN_ONLY, PBN_USES, type Settings, TILE_SHEETS,
   TRAY_STYLES,
 } from "../core/settings";
 import { decodeImage, download, encodePng } from "../image/browser";
@@ -31,7 +31,10 @@ const FORM: [string, FieldSpec[]][] = [
     ["spare_percent", "Spare tiles (%)", { step: 1, min: 0 }], ["tile_sheets", "Tile sheets", { choices: TILE_SHEETS }],
     ["tile_tabs", "Tabs between tiles"], ["tab_width", "Tab width (mm)", { step: 0.1, min: 0 }]]],
   ["Pattern (optional)", [["image", "Image"], ["background", "Background"], ["colors", "Max colors", { step: 1, min: 1 }]]],
-  ["Paint by number", [["pbn_use", "Board use", { choices: PBN_USES }],
+  ["Paint by number", [["canvas", "Canvas", { choices: CANVASES }], ["canvas_landscape", "Landscape canvas"],
+    ["canvas_width", "Custom width (mm)", { step: 1 }], ["canvas_height", "Custom height (mm)", { step: 1 }],
+    ["canvas_fit", "Picture fit", { choices: CANVAS_FITS }],
+    ["pbn_use", "Board use", { choices: PBN_USES }],
     ["pbn_min_region", "Min region (cells)", { step: 1, min: 1 }], ["pbn_smooth", "Smooth outlines"],
     ["pbn_margin", "Board margin (mm)", { step: 1, min: 0 }], ["pbn_line_width", "Print line width (mm)", { step: 0.05 }],
     ["pbn_text_min", "Min number (mm)", { step: 0.5 }], ["pbn_text_max", "Max number (mm)", { step: 0.5 }]]],
@@ -39,7 +42,12 @@ const FORM: [string, FieldSpec[]][] = [
 ];
 
 const SETTINGS_KEY = "pixelkit-settings";
-const CHOICE_LABELS: Record<string, string> = { mosaic: "Mosaic tiles", paint_by_number: "Paint by number" };
+const CHOICE_LABELS: Record<string, string> = {
+  mosaic: "Mosaic tiles", paint_by_number: "Paint by number", off: "Off (grid size)", custom: "Custom",
+  "8x10in": "8 × 10 in", "11x14in": "11 × 14 in", "12x12in": "12 × 12 in", "12x16in": "12 × 16 in",
+  "16x20in": "16 × 20 in", "18x24in": "18 × 24 in", "20x30cm": "20 × 30 cm", "30x40cm": "30 × 40 cm",
+  "40x50cm": "40 × 50 cm", fit: "Fit (whole picture)", fill: "Fill (crop to cover)",
+};
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 // ---------------------------------------------------------------- state
@@ -224,10 +232,21 @@ function imageControls(): HTMLElement {
 /** Show only the settings the current kit type uses. */
 function updateVisibility(): void {
   const pbn = settings.kit_type === "paint_by_number";
-  const hiddenKey = (k: Key) => (pbn && MOSAIC_ONLY.has(k)) || (!pbn && PBN_ONLY.has(k));
+  const canvas = pbn ? settings.canvas : "off";
+  const hiddenKey = (k: Key) => (pbn && MOSAIC_ONLY.has(k)) || (!pbn && PBN_ONLY.has(k)) ||
+    ((k === "canvas_width" || k === "canvas_height") && canvas !== "custom") ||
+    (k === "canvas_landscape" && (canvas === "off" || canvas === "custom"));
   for (const [key, row] of rowOf) row.hidden = hiddenKey(key);
   for (const [fs, keys] of fieldsets) fs.hidden = keys.every(hiddenKey);
   $("kerf-test").hidden = pbn;
+  // A canvas sets the grid: show its columns and rows, but don't let them be edited.
+  const derived = canvas !== "off" ? effectiveSettings(settings) : null;
+  for (const k of ["cols", "rows"] as const) {
+    const input = inputs.get(k) as HTMLInputElement;
+    if (derived) input.value = String(derived[k]);
+    else if (input.disabled) input.value = String(settings[k]); // back to the user's own grid
+    input.disabled = Boolean(derived);
+  }
 }
 
 function writeForm(): void {
@@ -252,6 +271,7 @@ function writeForm(): void {
 function readForm(): string | null {
   const next = { ...settings } as Record<Key, unknown>;
   for (const [key, input] of inputs) {
+    if (input.disabled) continue; // shows a derived value (canvas grid); keep the user's own
     if (input instanceof HTMLInputElement && input.type === "checkbox") next[key] = input.checked;
     else if (typeof DEFAULTS[key] === "number") {
       const n = Number(input.value);
@@ -297,7 +317,8 @@ async function currentPatternFor(): Promise<Pattern | null> {
   const img = await ensurePicture();
   if (!img || !picture) return null;
   const s = settings;
-  const key = [picture.id, s.cols, s.rows, s.colors, s.background].join("|");
+  const e = effectiveSettings(s);
+  const key = [picture.id, e.cols, e.rows, s.colors, s.background, canvasMm(s) ? s.canvas_fit : ""].join("|");
   if (patternCache?.key !== key) patternCache = { key, pattern: patternFor(s, img) };
   return patternCache.pattern;
 }

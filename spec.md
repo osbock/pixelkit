@@ -110,6 +110,10 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `pbn_margin` | float | 10.0 | Board border around the picture |
 | `pbn_line_width` | float | 0.3 | Outline width when printing |
 | `pbn_text_min`, `pbn_text_max` | float | 2.0, 6.0 | Number size limits |
+| `canvas` | choice | `off` | Paint-by-number board size: a preset, `custom` or `off` (§15) |
+| `canvas_landscape` | bool | false | Turn a preset sideways |
+| `canvas_width`, `canvas_height` | float | 203.2, 254.0 | Custom canvas size |
+| `canvas_fit` | choice | `fit` | `fit` or `fill` |
 | `output_dir` | str | `~/pixelkit_output` | Output folder (`~` expanded) |
 | `name` | str | `pixelart` | Prefix for output file names |
 
@@ -860,6 +864,37 @@ then:
     its layer colors, and Show picture fills the smooth regions (web) or the
     cells (desktop).
 
+12. **Canvas** (`canvas` other than `off`):
+    - **Presets:** 8×10, 11×14, 12×12, 12×16, 16×20 and 18×24 in, and 20×30,
+      30×40 and 40×50 cm. The sizes are portrait (width, height) in mm, e.g.
+      203.2 × 254.0; landscape swaps them. Custom uses `canvas_width` ×
+      `canvas_height` as given.
+    - **Grid:** cols = ⌊(W − 2·margin) / pixel⌋ and rows likewise. These
+      replace the cols and rows settings everywhere: pattern, board, notes,
+      summary and scaled PNG.
+      **Why** this direction: the cell size sets how fine the painting is, so
+      it stays as chosen.
+    - **Limits:** a grid over 300 per side is rejected with a canvas-specific
+      message, as is a canvas with no room for a cell.
+    - **Board:** exactly W × H, with the grid centred:
+      offset ((W − cols·pixel) / 2, (H − rows·pixel) / 2).
+    - **Picture:** `load_pattern` gets `fit`:
+      - **`fill`:** first crop the picture, centred, to the grid's aspect:
+        crop width round(h·cols / rows) when the picture is wider than the
+        grid, else crop height round(w·rows / cols), starting at
+        ⌊(size − crop) / 2⌋. The result is then resized to exactly
+        cols × rows.
+      - **`fit`:** scale to fit inside the grid and pad as usual.
+      - **Both, in canvas mode:** a picture smaller than the grid is enlarged
+        with nearest-pixel sampling, so no new colors appear.
+    - **Notes** add the canvas name and size, the fit, and the side and top
+      margins.
+    - **UI:**
+      - Columns and Rows are disabled and show the computed grid. The web
+        restores the user's own values when the canvas is turned off.
+      - The custom size applies only to `custom`, and landscape only to
+        presets.
+
 **Checks:**
 - A 3 × 3 grid with one odd center cell and min region 2 merges to one color.
 - On the sample JPEG at 40 × 50:
@@ -873,4 +908,8 @@ then:
   - pixel art (print, steps, min region 1);
   - the sample JPEG;
   - a photo-like gradient at 80 × 80;
-  - aggressive merging (min region 40, margin 0).
+  - aggressive merging (min region 40, margin 0);
+  - canvases: 8×10 in fit with an enlarged emoji, 12×16 in landscape fill,
+    custom 150 × 100 mm fill, and 30×40 cm fit in print mode.
+- **Canvas grid:** 8×10 in at 3 mm gives 61 × 78 cells on a 203.2 × 254 mm
+  board.

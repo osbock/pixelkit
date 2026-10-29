@@ -10,7 +10,7 @@ import type { RGBAImage } from "../src/core/pattern";
 import {
   Board, labelRegions, mergeSmallRegions, numberSpots, outlineChains, PBN_LINE, PBN_NUMBER,
 } from "../src/core/pbn";
-import { DEFAULTS, type Settings, validate } from "../src/core/settings";
+import { canvasMm, DEFAULTS, effectiveSettings, type Settings, validate } from "../src/core/settings";
 import { decode, decodePng, emoji, ROOT, sunflower, writePng } from "./helpers";
 
 const S = (p: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, kit_type: "paint_by_number", ...p });
@@ -62,6 +62,14 @@ function cases(): [string, Partial<Settings>, RGBAImage][] {
     ["photo-like, many regions", { image: png(photo), cols: 80, rows: 80, pixel: 3, colors: 10, pbn_min_region: 6 }, photo],
     ["aggressive merging", { image: png(photo), cols: 60, rows: 60, pixel: 4, colors: 12, pbn_min_region: 40,
       pbn_text_min: 3, pbn_text_max: 9, pbn_margin: 0 }, photo],
+    ["canvas 8x10in, fit, emoji enlarged", { image: "emoji:1f33b sunflower", canvas: "8x10in", pixel: 2.5,
+      background: "#1e8cdc" }, decodePng(emoji().png("1f33b"))],
+    ["canvas 12x16in landscape, fill", { image: png(jpeg), canvas: "12x16in", canvas_landscape: true,
+      canvas_fit: "fill", pixel: 4 }, jpeg],
+    ["canvas custom, fill, shrunk", { image: png(photo), canvas: "custom", canvas_width: 150, canvas_height: 100,
+      canvas_fit: "fill", pixel: 2, colors: 9, pbn_min_region: 6 }, photo],
+    ["canvas 30x40cm, fit, print", { image: png(jpeg), canvas: "30x40cm", pixel: 3, pbn_use: "print",
+      pbn_margin: 15 }, jpeg],
   ];
 }
 
@@ -149,5 +157,40 @@ describe("paint by number structure", () => {
     expect(files.map((f) => f.name).sort()).toEqual(
       ["pixelart_notes.txt", "pixelart_pbn.svg", "pixelart_pbn_key.svg", "pixelart_pbn_preview.svg", "sunflower_scaled.png"]);
     expect(validate(S())).toContain("Paint by number needs a picture.");
+  });
+});
+
+describe("paint by number canvases", () => {
+  const sunflower = () => decodePng(emoji().png("1f33b"));
+
+  it("fits as many cells as the canvas allows and sizes the board to the canvas", () => {
+    const s = S({ image: "emoji:1f33b sunflower", canvas: "8x10in", pixel: 3 });
+    const e = effectiveSettings(s);
+    expect([e.cols, e.rows]).toEqual([61, 78]); // floor((203.2 - 20) / 3), floor((254 - 20) / 3)
+    const sheet = build(s, sunflower()).sheets[0];
+    expect([sheet.w, sheet.h]).toEqual([203.2, 254]);
+    const [[x0, y0]] = sheet.items[0].picture!;
+    expect(x0).toBeCloseTo((203.2 - 61 * 3) / 2);
+    expect(y0).toBeCloseTo((254 - 78 * 3) / 2);
+  });
+
+  it("turns presets sideways and uses custom sizes as given", () => {
+    expect(canvasMm(S({ canvas: "11x14in", canvas_landscape: true }))).toEqual([355.6, 279.4]);
+    expect(canvasMm(S({ canvas: "custom", canvas_width: 150, canvas_height: 100, canvas_landscape: true }))).toEqual([150, 100]);
+    expect(canvasMm(S({ canvas: "off" }))).toBeNull();
+    expect(canvasMm(S({ kit_type: "mosaic", canvas: "8x10in" }))).toBeNull(); // mosaics ignore it
+  });
+
+  it("enlarges a small picture to fit, and fill covers the whole grid", () => {
+    const fit = build(S({ image: "emoji:1f33b sunflower", canvas: "12x12in", pixel: 2 }), sunflower());
+    expect(fit.pattern!.note).toContain("enlarged to 142 x 142 (nearest pixel)");
+    const fill = build(S({ image: "emoji:1f33b sunflower", canvas: "8x10in", pixel: 3, canvas_fit: "fill" }), sunflower());
+    expect(fill.pattern!.note).toContain("cropped to 56 x 72 enlarged to 61 x 78");
+    expect(fill.pattern!.note).not.toContain("padded");
+  });
+
+  it("rejects canvases needing too many cells", () => {
+    expect(validate(S({ image: "x.png", canvas: "18x24in", pixel: 0.5 }))).toEqual(
+      ["The canvas needs 874 x 1179 cells of 0.5 mm; the limit is 300 per side, so use a larger pixel size."]);
   });
 });

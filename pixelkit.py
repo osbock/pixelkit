@@ -34,7 +34,7 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 
 CUT = "#ff0000"
@@ -45,7 +45,16 @@ TRAY_STYLES = ["box", "layered", "none"]
 TILE_SHEETS = ["combined", "per_color"]
 KIT_TYPES = ["mosaic", "paint_by_number"]
 PBN_USES = ["engrave", "print"]
-CHOICES = {"kit_type": KIT_TYPES, "tray_style": TRAY_STYLES, "tile_sheets": TILE_SHEETS, "pbn_use": PBN_USES}
+# Paint-by-number canvas presets, portrait (width, height) in mm.
+CANVAS_SIZES = {
+    "8x10in": (203.2, 254.0), "11x14in": (279.4, 355.6), "12x12in": (304.8, 304.8),
+    "12x16in": (304.8, 406.4), "16x20in": (406.4, 508.0), "18x24in": (457.2, 609.6),
+    "20x30cm": (200.0, 300.0), "30x40cm": (300.0, 400.0), "40x50cm": (400.0, 500.0),
+}
+CANVASES = ["off", "custom"] + list(CANVAS_SIZES)
+CANVAS_FITS = ["fit", "fill"]
+CHOICES = {"kit_type": KIT_TYPES, "tray_style": TRAY_STYLES, "tile_sheets": TILE_SHEETS, "pbn_use": PBN_USES,
+           "canvas": CANVASES, "canvas_fit": CANVAS_FITS}
 
 
 @dataclass
@@ -84,6 +93,11 @@ class Settings:
     pbn_line_width: float = 0.3    # outline width when printing, mm
     pbn_text_min: float = 2.0      # smallest number, mm
     pbn_text_max: float = 6.0      # largest number, mm
+    canvas: str = "off"            # paint by number: board size preset, "custom", or "off" (size from the grid)
+    canvas_landscape: bool = False # turn a preset canvas sideways
+    canvas_width: float = 203.2    # custom canvas, mm
+    canvas_height: float = 254.0
+    canvas_fit: str = "fit"        # fit: whole picture, padded | fill: cover the canvas, cropping overflow
     output_dir: str = "~/pixelkit_output"
     name: str = "pixelart"
 
@@ -800,7 +814,7 @@ def detect_grid(path):
     return max(1, round(w / cell)), max(1, round(h / cell))
 
 
-def load_pattern(path, cols, rows, max_colors, background="#ffffff"):
+def load_pattern(path, cols, rows, max_colors, background="#ffffff", fit=None):
     """Reduce an image to a cols x rows grid of palette indices, most common
     color first.
 
@@ -808,21 +822,42 @@ def load_pattern(path, cols, rows, max_colors, background="#ffffff"):
     its aspect ratio; one that already fits is used 1:1. Either way it is
     centred and any leftover rows/columns are filled with the most common
     border color. When scaling down, each tile takes the majority color of
-    its area rather than an average, so pixel art stays crisp."""
+    its area rather than an average, so pixel art stays crisp.
+
+    For canvases, fit="fit" also enlarges a small picture (nearest pixel, so
+    colors stay flat) until it fits, and fit="fill" first crops the picture,
+    centred, to the grid's shape so it covers the whole grid."""
     from PIL import Image
 
+    resampling = getattr(Image, "Resampling", Image)
     im = _rgb_image(path, background)
     w, h = im.size
     note = f"Pattern: {path.split()[0] if is_emoji(path) else 'image'} {w} x {h} px"
+    if fit == "fill" and w * rows != h * cols:
+        if w * rows > h * cols:  # wider than the grid
+            cw = max(1, round(h * cols / rows))
+            x0 = (w - cw) // 2
+            im = im.crop((x0, 0, x0 + cw, h))
+        else:
+            ch = max(1, round(w * rows / cols))
+            y0 = (h - ch) // 2
+            im = im.crop((0, y0, w, y0 + ch))
+        w, h = im.size
+        note += f" cropped to {w} x {h}"
     scale = min(cols / w, rows / h)
     nw, nh = w, h
     sub = 1  # samples per tile side used for the majority vote
     if scale < 1:
-        nw = min(cols, max(1, round(w * scale)))
-        nh = min(rows, max(1, round(h * scale)))
+        nw = cols if fit == "fill" else min(cols, max(1, round(w * scale)))
+        nh = rows if fit == "fill" else min(rows, max(1, round(h * scale)))
         sub = max(1, min(8, int(min(w / nw, h / nh))))
-        im = im.resize((nw * sub, nh * sub), getattr(Image, "Resampling", Image).BOX)
+        im = im.resize((nw * sub, nh * sub), resampling.BOX)
         note += f" scaled to {nw} x {nh} (majority color per tile)"
+    elif scale > 1 and fit:
+        nw = cols if fit == "fill" else min(cols, max(1, round(w * scale)))
+        nh = rows if fit == "fill" else min(rows, max(1, round(h * scale)))
+        im = im.resize((nw, nh), resampling.NEAREST)
+        note += f" enlarged to {nw} x {nh} (nearest pixel)"
     pixels = reduce_colors(list(im.getdata()), max_colors)
     iw = nw * sub
     cells = []
@@ -1196,6 +1231,38 @@ def number_spots(grid):
     return [(i, j, key[0], grid[j][i]) for key, i, j in best]
 
 
+def canvas_mm(s):
+    """(width, height) of the paint-by-number canvas in mm, or None when the
+    board is sized from the grid."""
+    if s.kit_type != "paint_by_number" or s.canvas == "off":
+        return None
+    if s.canvas == "custom":
+        return s.canvas_width, s.canvas_height
+    w, h = CANVAS_SIZES.get(s.canvas, (0.0, 0.0))
+    return (h, w) if s.canvas_landscape else (w, h)
+
+
+def effective_settings(s):
+    """Settings with columns and rows worked out from the canvas, when one is
+    set: as many cells of the chosen size as fit inside the margin."""
+    c = canvas_mm(s)
+    if not c:
+        return s
+    cols = math.floor((c[0] - 2 * s.pbn_margin) / s.pixel) if s.pixel > 0 else 0
+    rows = math.floor((c[1] - 2 * s.pbn_margin) / s.pixel) if s.pixel > 0 else 0
+    return replace(s, cols=cols, rows=rows)
+
+
+def pbn_layout(s, cols, rows):
+    """Board size and picture offset: the canvas with the grid centred on
+    it, or the grid plus the margin."""
+    c = canvas_mm(s)
+    p = s.pixel
+    if c:
+        return c[0], c[1], (c[0] - cols * p) / 2, (c[1] - rows * p) / 2
+    return cols * p + 2 * s.pbn_margin, rows * p + 2 * s.pbn_margin, s.pbn_margin, s.pbn_margin
+
+
 def build_pbn(s, pattern):
     """Paint-by-number board from a pattern. Returns (board piece, width,
     height, merged pattern, regions per color, notes)."""
@@ -1212,14 +1279,14 @@ def build_pbn(s, pattern):
                       "counts": [counts[i] for i in order], "grid": grid}
 
     rows, cols = len(grid), len(grid[0])
-    p, mg = s.pixel, s.pbn_margin
-    w, h = cols * p + 2 * mg, rows * p + 2 * mg
+    p = s.pixel
+    w, h, ox, oy = pbn_layout(s, cols, rows)
     engrave = s.pbn_use == "engrave"
     board = Piece("paint_by_number")
     board.line_color = PBN_LINE if engrave else PBN_PRINT_LINE
     board.text_color = PBN_NUMBER if engrave else PBN_PRINT_NUMBER
     board.line_width = STROKE if engrave else s.pbn_line_width
-    board.picture = [(mg, mg), (mg + cols * p, mg), (mg, mg + rows * p)]
+    board.picture = [(ox, oy), (ox + cols * p, oy), (ox, oy + rows * p)]
     labels, sizes = label_regions(grid)
     chains = outline_chains(grid)
     sides = [chain_sides(pts, labels) for pts, _ in chains]
@@ -1228,7 +1295,7 @@ def build_pbn(s, pattern):
         if s.pbn_smooth:
             pts = smooth_chain(pts, closed)
         shaped.append((drop_collinear(pts, closed), closed))
-    to_mm = lambda pts: [(mg + x * p, mg + y * p) for x, y in pts]
+    to_mm = lambda pts: [(ox + x * p, oy + y * p) for x, y in pts]
     board.engraves = [(to_mm(pts), closed) for pts, closed in shaped]
     # Fills for the color preview: each color's region outlines as one path.
     region_color = [0] * len(sizes)
@@ -1249,7 +1316,7 @@ def build_pbn(s, pattern):
         if size < s.pbn_text_min:
             size = s.pbn_text_min
             tight += 1
-        cx, cy = mg + (i + 0.5) * p, mg + (j + 0.5) * p
+        cx, cy = ox + (i + 0.5) * p, oy + (j + 0.5) * p
         board.texts.append((cx, cy + size * 0.35, size, text, 0.0, "middle"))
     if engrave:
         board.cuts.append((rect_pts(0, 0, w, h), True))
@@ -1259,6 +1326,11 @@ def build_pbn(s, pattern):
         f"({s.pbn_use}); {sum(regions)} regions in {len(order)} colors"
         + (f", {merged} region(s) under {s.pbn_min_region} cells merged into a neighbour" if merged else ""),
     ]
+    c = canvas_mm(s)
+    if c:
+        name = "custom" if s.canvas == "custom" else s.canvas + (" landscape" if s.canvas_landscape else "")
+        notes.append(f"Canvas {name}: {c[0]:g} x {c[1]:g} mm, picture {s.canvas_fit}, grid centred "
+                     f"with {ox:.1f} / {oy:.1f} mm side / top margins.")
     if tight:
         notes.append(f"{tight} region(s) are too small for a {s.pbn_text_min:g} mm number; "
                      "their numbers overlap the outlines. Raise Min region or use more cells.")
@@ -1349,9 +1421,19 @@ def pbn_key_svg(s, pattern, regions, credit):
 
 def validate(s):
     problems = []
-    if s.cols < 1 or s.rows < 1:
+    c = canvas_mm(s)
+    if c:
+        if s.canvas == "custom" and not (s.canvas_width > 0 and s.canvas_height > 0):
+            problems.append("Custom canvas width and height must be positive.")
+        s = effective_settings(s)
+        if s.cols < 1 or s.rows < 1:
+            problems.append("The canvas has no room for a cell inside the margin.")
+        elif s.cols > MAX_GRID or s.rows > MAX_GRID:
+            problems.append(f"The canvas needs {s.cols} x {s.rows} cells of {s.pixel:g} mm; the limit is "
+                            f"{MAX_GRID} per side, so use a larger pixel size.")
+    if not c and (s.cols < 1 or s.rows < 1):
         problems.append("Columns and rows must be at least 1.")
-    if s.cols > MAX_GRID or s.rows > MAX_GRID:
+    if not c and (s.cols > MAX_GRID or s.rows > MAX_GRID):
         problems.append(f"Columns and rows are limited to {MAX_GRID} tiles each.")
     for k in ("pixel", "tile_thickness", "tray_thickness", "sheet_width", "sheet_height"):
         if getattr(s, k) <= 0:
@@ -1394,7 +1476,9 @@ def build(s):
     problems = validate(s)
     if problems:
         raise ValueError("\n".join(problems))
-    pattern = load_pattern(s.image, s.cols, s.rows, s.colors, s.background) if s.image else None
+    fit = s.canvas_fit if canvas_mm(s) else None
+    s = effective_settings(s)
+    pattern = load_pattern(s.image, s.cols, s.rows, s.colors, s.background, fit) if s.image else None
     notes = [pattern["note"]] if pattern else []
     if pattern and is_emoji(pattern["source"]):
         notes.append(EMOJI_CREDIT)
@@ -1452,8 +1536,17 @@ def _tile_count(block, s):
 
 
 def summary(s):
+    s = effective_settings(s)
     if s.kit_type == "paint_by_number":
         mg = s.pbn_margin
+        c = canvas_mm(s)
+        if c:
+            turned = " landscape" if s.canvas_landscape and s.canvas != "custom" else ""
+            return "\n".join([
+                f"Picture: {s.cols} x {s.rows} = {s.cols * s.rows} cells, "
+                f"{s.cols * s.pixel:g} x {s.rows * s.pixel:g} mm ({s.canvas_fit})",
+                f"Canvas {s.canvas}{turned}: {c[0]:.1f} x {c[1]:.1f} mm, {mg:g} mm minimum margin",
+            ])
         return "\n".join([
             f"Picture: {s.cols} x {s.rows} = {s.cols * s.rows} cells, "
             f"{s.cols * s.pixel:g} x {s.rows * s.pixel:g} mm",
@@ -1539,6 +1632,7 @@ def write_scaled_image(path, pattern):
 def generate(s):
     """Write all SVGs plus a notes file. Returns (files, notes, sheets, pattern)."""
     sheets, pattern, needed, notes = build(s)
+    s = effective_settings(s)
     out = Path(os.path.expanduser(s.output_dir))
     out.mkdir(parents=True, exist_ok=True)
     files = []
@@ -1600,7 +1694,10 @@ FORM = [
                 ("spare_percent", "Spare tiles (%)"), ("tile_sheets", "Tile sheets"),
                 ("tile_tabs", "Tabs between tiles"), ("tab_width", "Tab width (mm)")]),
     ("Pattern (optional)", [("image", "Image"), ("background", "Background"), ("colors", "Max colors")]),
-    ("Paint by number", [("pbn_use", "Board use"), ("pbn_min_region", "Min region (cells)"),
+    ("Paint by number", [("canvas", "Canvas"), ("canvas_landscape", "Landscape canvas"),
+                         ("canvas_width", "Custom width (mm)"), ("canvas_height", "Custom height (mm)"),
+                         ("canvas_fit", "Picture fit"),
+                         ("pbn_use", "Board use"), ("pbn_min_region", "Min region (cells)"),
                          ("pbn_smooth", "Smooth outlines"), ("pbn_margin", "Board margin (mm)"),
                          ("pbn_line_width", "Print line width (mm)"), ("pbn_text_min", "Min number (mm)"),
                          ("pbn_text_max", "Max number (mm)")]),
@@ -1611,7 +1708,7 @@ FORM_COLUMNS = (FORM[:4], FORM[4:])
 MOSAIC_ONLY = {"tile_thickness", "tray_thickness", "kerf", "tile_kerf", "tray_style", "tile_clearance", "lip",
                "finger_width", "joint_play", "frame_width", "engrave_grid", "engrave_numbers", "spacing",
                "tile_border", "spare_percent", "tile_sheets", "tile_tabs", "tab_width"}
-PBN_ONLY = {f.name for f in fields(Settings) if f.name.startswith("pbn_")}
+PBN_ONLY = {f.name for f in fields(Settings) if f.name.startswith(("pbn_", "canvas"))}
 
 
 def load_saved():
@@ -2103,12 +2200,20 @@ def run_gui():
 
     def update_enabled(*_):
         pbn = vars_["kit_type"].get() == "paint_by_number"
+        canvas = vars_["canvas"].get()
         for key, widgets in rows_of.items():
             off = (pbn and key in MOSAIC_ONLY) or (not pbn and key in PBN_ONLY)
+            if pbn and canvas != "off" and key in ("cols", "rows"):
+                off = True  # worked out from the canvas
+            if key in ("canvas_width", "canvas_height") and canvas != "custom":
+                off = True
+            if key == "canvas_landscape" and canvas in ("off", "custom"):
+                off = True
             for w in widgets:
                 w.state(["disabled"] if off else ["!disabled"])
 
     vars_["kit_type"].trace_add("write", update_enabled)
+    vars_["canvas"].trace_add("write", update_enabled)
     update_enabled()
     for v in vars_.values():
         v.trace_add("write", refresh_info)
