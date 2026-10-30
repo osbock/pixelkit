@@ -95,6 +95,7 @@ legend { font-weight: 600; padding: 0 4px; }
 }
 .field input.bad { border-color: #d33; } /* step mismatches aren't errors: any value works */
 .check { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+button[aria-pressed="true"] { background: var(--select); border-color: var(--accent); }
 .image-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .image-name {
   margin-top: 6px;
@@ -129,6 +130,8 @@ legend { font-weight: 600; padding: 0 4px; }
 /* With the picture shown, fade the engraved grid so the colors read true. */
 .preview.picture path[stroke="#0000ff"] { stroke-opacity: 0.25; }
 .preview.picture g#outlines { stroke-opacity: 0.45; }
+.preview rect.zone { fill: none; stroke: #e0218a; stroke-width: 1.5px; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
+.preview.marking { cursor: crosshair; }
 .nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .sheet-label { color: var(--muted); flex: 1; min-width: 140px; }
 .log { white-space: pre-wrap; min-height: 2.8em; color: var(--ink); }

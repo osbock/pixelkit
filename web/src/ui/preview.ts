@@ -9,18 +9,37 @@ export class Preview {
   private view: [number, number, number, number] | null = null;
   private sheetSize: [number, number] = [0, 0];
   private svg: SVGSVGElement | null = null;
+  /** While set, dragging marks a box (in sheet mm) instead of panning. */
+  onMark: ((a: [number, number], b: [number, number]) => void) | null = null;
 
   constructor(private host: HTMLElement) {
     host.addEventListener("wheel", (e) => this.zoom(e), { passive: false });
     host.addEventListener("dblclick", () => this.fit());
     let drag: { x: number; y: number; view: [number, number, number, number] } | null = null;
+    let mark: { from: [number, number]; box: SVGRectElement } | null = null;
     host.addEventListener("pointerdown", (e) => {
       if (!this.view) return;
+      if (this.onMark && this.svg) {
+        const from = this.toSheet(e);
+        const box = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        box.setAttribute("class", "zone");
+        this.svg.append(box);
+        mark = { from, box };
+        host.setPointerCapture(e.pointerId);
+        return;
+      }
       drag = { x: e.clientX, y: e.clientY, view: [...this.view] };
       host.setPointerCapture(e.pointerId);
       host.classList.add("dragging");
     });
     host.addEventListener("pointermove", (e) => {
+      if (mark) {
+        const [x, y] = this.toSheet(e);
+        mark.box.setAttribute("x", String(Math.min(x, mark.from[0])));
+        mark.box.setAttribute("y", String(Math.min(y, mark.from[1])));
+        mark.box.setAttribute("width", String(Math.abs(x - mark.from[0])));
+        mark.box.setAttribute("height", String(Math.abs(y - mark.from[1])));
+      }
       if (!drag || !this.svg) return;
       const k = drag.view[2] / this.svg.clientWidth;
       const scale = Math.max(k, drag.view[3] / this.svg.clientHeight);
@@ -30,11 +49,33 @@ export class Preview {
       drag = null;
       host.classList.remove("dragging");
     };
-    host.addEventListener("pointerup", end);
-    host.addEventListener("pointercancel", end);
+    host.addEventListener("pointerup", (e) => {
+      if (mark) {
+        const { from, box } = mark;
+        mark = null;
+        box.remove();
+        this.onMark?.(from, this.toSheet(e));
+      }
+      end();
+    });
+    host.addEventListener("pointercancel", () => {
+      mark?.box.remove();
+      mark = null;
+      end();
+    });
   }
 
-  show(sheet: SheetOut | null, pattern: Pattern | null): void {
+  /** A pointer position in sheet mm (meet: uniform scale, centred). */
+  private toSheet(e: MouseEvent): [number, number] {
+    const rect = this.svg!.getBoundingClientRect();
+    const [vx, vy, vw, vh] = this.view!;
+    const scale = Math.max(vw / rect.width, vh / rect.height);
+    const ox = vx - (rect.width * scale - vw) / 2, oy = vy - (rect.height * scale - vh) / 2;
+    return [ox + (e.clientX - rect.left) * scale, oy + (e.clientY - rect.top) * scale];
+  }
+
+  /** `zones` are detail zones as [x, y, width, height] in sheet mm. */
+  show(sheet: SheetOut | null, pattern: Pattern | null, zones: number[][] = []): void {
     if (!sheet) {
       this.host.innerHTML = "";
       this.svg = null;
@@ -69,7 +110,8 @@ export class Preview {
     this.host.innerHTML =
       `<svg xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" viewBox="0 0 ${w} ${h}">` +
       `<rect width="${w}" height="${h}" fill="var(--sheet)"/>` +
-      `<g>${overlay.join("")}</g>${(board ? pbnBody(board) : piecesMarkup(items)).join("")}</svg>`;
+      `<g>${overlay.join("")}</g>${(board ? pbnBody(board) : piecesMarkup(items)).join("")}` +
+      zones.map(([x, y, zw, zh]) => `<rect class="zone" x="${x}" y="${y}" width="${zw}" height="${zh}"/>`).join("") + "</svg>";
     this.svg = this.host.querySelector("svg");
     if (sameSize && this.view) this.setView(this.view);
     else this.fit();
@@ -89,12 +131,8 @@ export class Preview {
   private zoom(e: WheelEvent): void {
     if (!this.view || !this.svg) return;
     e.preventDefault();
-    const rect = this.svg.getBoundingClientRect();
     const [vx, vy, vw, vh] = this.view;
-    // Map the pointer into sheet coordinates (meet: uniform scale, centred).
-    const scale = Math.max(vw / rect.width, vh / rect.height);
-    const ox = vx - (rect.width * scale - vw) / 2, oy = vy - (rect.height * scale - vh) / 2;
-    const px = ox + (e.clientX - rect.left) * scale, py = oy + (e.clientY - rect.top) * scale;
+    const [px, py] = this.toSheet(e);
     const f = Math.exp(Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 100) * 0.002);
     const nw = Math.min(Math.max(vw * f, this.sheetSize[0] * 0.02), this.sheetSize[0] * 4);
     const k = nw / vw;

@@ -103,6 +103,21 @@ color splits between its neighbours. Boards can be up to 1,500 cells per side.
 flat-color art. Min area and Min width then decide how much detail survives,
 and **Simplify** keeps the outline files small.
 
+**Detail zones** rescue small features that matter, like eyes, without
+filling the whole board with tiny regions. With a picture loaded, press **Mark
+zones** and drag a box on the preview over each one (on the web, scroll to
+zoom in first). Inside a box:
+
+- regions down to **Zone min area** and **Zone min width** are kept;
+- pixels the palette matched badly, such as a highlight lumped in with the
+  dark around it, move to a closer color, and up to **Zone extra colors** new
+  colors are added if nothing on the palette is close;
+- numbers may shrink to half of **Min number**.
+
+A region counts as inside when at least half of it is. Zones are saved as
+fractions of the grid, so they survive a change of pixel size, and are cleared
+when you choose a different picture.
+
 **Large boards** take a few seconds to build. On the web the preview waits a
 little longer after you type. In the desktop app, boards over 250,000 cells
 preview only when you press **Preview**, and the desktop pixel editor handles
@@ -224,6 +239,9 @@ All lengths are in mm.
 | `pbn_margin` | 10 | Board border around the picture |
 | `pbn_line_width` | 0.3 | Outline width when printing |
 | `pbn_text_min`, `pbn_text_max` | 2, 6 | Smallest and largest number size |
+| `pbn_zones` | empty | Detail zones, `x0,y0,x1,y1;...` as fractions of the grid (usually marked on the preview) |
+| `pbn_zone_area`, `pbn_zone_width` | 0.25, 0 | Min area (mm²) and min width (mm) inside a zone |
+| `pbn_zone_colors` | 2 | Most colors each zone may add to the palette |
 | `canvas` | off | Paint by number: a board size preset (`8x10in`, `11x14in`, `12x12in`, `12x16in`, `16x20in`, `18x24in`, `20x30cm`, `30x40cm`, `40x50cm`), `custom`, or `off` to size the board from the grid |
 | `canvas_landscape` | off | Turn a preset sideways |
 | `canvas_width`, `canvas_height` | 203.2, 254 | Custom canvas size |

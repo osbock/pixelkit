@@ -4,7 +4,7 @@ import { EmojiSet, emojiCode, isEmoji } from "../core/emoji";
 import { build, generate, kerfTest, type SheetOut, patternFor, scaledImageName, summary } from "../core/kit";
 import { composite, detectGrid, type Pattern, type RGBAImage, scaledImage } from "../core/pattern";
 import {
-  CANVAS_FITS, CANVASES, canvasMm, DEFAULTS, effectiveSettings, gridLimit, INT_FIELDS, KIT_TYPES, MAX_GRID_PBN, MOSAIC_ONLY, parseColor, PBN_ONLY, PBN_USES, type Settings, TILE_SHEETS,
+  CANVAS_FITS, CANVASES, canvasMm, DEFAULTS, effectiveSettings, gridLimit, INT_FIELDS, KIT_TYPES, MAX_GRID_PBN, MOSAIC_ONLY, parseColor, parseZones, PBN_ONLY, PBN_USES, type Settings, TILE_SHEETS,
   TRAY_STYLES,
 } from "../core/settings";
 import { decodeImage, download, encodePng } from "../image/browser";
@@ -38,7 +38,9 @@ const FORM: [string, FieldSpec[]][] = [
     ["pbn_min_area", "Min area (mm²)", { step: 1, min: 0 }], ["pbn_min_width", "Min width (mm)", { step: 0.25, min: 0 }],
     ["pbn_simplify", "Simplify (mm)", { step: 0.01, min: 0 }], ["pbn_smooth", "Smooth outlines"],
     ["pbn_margin", "Board margin (mm)", { step: 1, min: 0 }], ["pbn_line_width", "Print line width (mm)", { step: 0.05 }],
-    ["pbn_text_min", "Min number (mm)", { step: 0.5 }], ["pbn_text_max", "Max number (mm)", { step: 0.5 }]]],
+    ["pbn_text_min", "Min number (mm)", { step: 0.5 }], ["pbn_text_max", "Max number (mm)", { step: 0.5 }],
+    ["pbn_zones", "Detail zones"], ["pbn_zone_area", "Zone min area (mm²)", { step: 0.05, min: 0 }],
+    ["pbn_zone_width", "Zone min width (mm)", { step: 0.25, min: 0 }], ["pbn_zone_colors", "Zone extra colors", { step: 1, min: 1 }]]],
   ["Output", [["name", "Name prefix"]]],
 ];
 
@@ -68,6 +70,8 @@ const inputs = new Map<Key, HTMLInputElement | HTMLSelectElement>();
 const rowOf = new Map<Key, HTMLElement>(); // each setting's row, for hiding by kit type
 const fieldsets: [HTMLFieldSetElement, Key[]][] = [];
 const imageName = document.createElement("div");
+const zoneStatus = document.createElement("span");
+const markZone = document.createElement("button");
 
 function loadSettings(): Settings {
   try {
@@ -123,6 +127,12 @@ function buildForm(): void {
     for (const [key, label, opts = {}] of fields) {
       if (key === "image") {
         fs.append(imageControls());
+        continue;
+      }
+      if (key === "pbn_zones") {
+        const zones = zoneControls();
+        fs.append(zones);
+        rowOf.set(key, zones);
         continue;
       }
       if (typeof DEFAULTS[key] === "boolean") {
@@ -217,6 +227,7 @@ function imageControls(): HTMLElement {
     button("Edit pixels…", () => void editPixels()),
     button("Clear", () => {
       settings.image = "";
+      settings.pbn_zones = "";
       picture = null;
       void savePicture(null);
       writeForm();
@@ -228,6 +239,62 @@ function imageControls(): HTMLElement {
   hint.textContent = "Or drop an image anywhere on the page.";
   wrap.append(imageName, row, file, hint);
   return wrap;
+}
+
+/** Detail zones: boxes marked on the preview where smaller regions are kept. */
+function zoneControls(): HTMLElement {
+  const wrap = document.createElement("div");
+  const row = document.createElement("div");
+  row.className = "image-row";
+  markZone.type = "button";
+  markZone.textContent = "Mark zones";
+  markZone.setAttribute("aria-pressed", "false");
+  markZone.addEventListener("click", () => setMarking(!preview.onMark));
+  const button = (text: string, fn: () => void) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.addEventListener("click", fn);
+    return b;
+  };
+  row.append(
+    markZone,
+    button("Undo zone", () => setZones(settings.pbn_zones.split(";").filter((z) => z.trim()).slice(0, -1).join(";"))),
+    button("Clear zones", () => setZones("")),
+  );
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.textContent = "Drag a box on the preview over each eye or other detail; scroll to zoom in first.";
+  const label = document.createElement("div");
+  label.className = "hint";
+  label.append(zoneStatus);
+  wrap.append(label, row, hint);
+  return wrap;
+}
+
+function setMarking(on: boolean): void {
+  preview.onMark = on ? addZone : null;
+  markZone.setAttribute("aria-pressed", String(on));
+  $("preview").classList.toggle("marking", on);
+}
+
+function setZones(text: string): void {
+  settings.pbn_zones = text;
+  writeForm();
+  changed();
+}
+
+function addZone(a: [number, number], b: [number, number]): void {
+  const picture = sheets[sheetIndex]?.items[0]?.picture;
+  if (!picture) return;
+  const [[ox, oy], [qx], [, qy]] = picture;
+  const u = (x: number) => Math.min(1, Math.max(0, (x - ox) / (qx - ox)));
+  const v = (y: number) => Math.min(1, Math.max(0, (y - oy) / (qy - oy)));
+  const x0 = Math.min(u(a[0]), u(b[0])), x1 = Math.max(u(a[0]), u(b[0]));
+  const y0 = Math.min(v(a[1]), v(b[1])), y1 = Math.max(v(a[1]), v(b[1]));
+  const box = [x0, y0, x1, y1].map((n) => n.toFixed(4));
+  if (Number(box[2]) <= Number(box[0]) || Number(box[3]) <= Number(box[1])) return; // a click, not a drag
+  setZones([settings.pbn_zones, box.join(",")].filter(Boolean).join(";"));
 }
 
 /** Show only the settings the current kit type uses. */
@@ -265,6 +332,8 @@ function writeForm(): void {
     ? (isEmoji(settings.image) ? `Emoji: ${settings.image.slice(settings.image.indexOf(" ") + 1)}` : settings.image)
     : "No picture (tray and blank tiles only)";
   imageName.classList.toggle("set", Boolean(settings.image));
+  const zones = settings.pbn_zones.split(";").filter((z) => z.trim()).length;
+  zoneStatus.textContent = zones ? `${zones} detail zone(s)` : "No detail zones";
   updateVisibility();
 }
 
@@ -319,7 +388,8 @@ async function currentPatternFor(): Promise<Pattern | null> {
   if (!img || !picture) return null;
   const s = settings;
   const e = effectiveSettings(s);
-  const key = [picture.id, e.cols, e.rows, s.colors, s.background, canvasMm(s) ? s.canvas_fit : ""].join("|");
+  const key = [picture.id, e.cols, e.rows, s.colors, s.background, canvasMm(s) ? s.canvas_fit : "", s.kit_type,
+    s.pbn_zones, s.pbn_zone_colors, s.pbn_zone_area, s.pixel].join("|");
   if (patternCache?.key !== key) patternCache = { key, pattern: patternFor(s, img) };
   return patternCache.pattern;
 }
@@ -364,11 +434,24 @@ function showTraySheet(): void {
 function render(): void {
   const sheet = sheets[sheetIndex] ?? null;
   const show = $<HTMLInputElement>("show-picture").checked;
-  preview.show(sheet, show ? currentPattern : null);
+  preview.show(sheet, show ? currentPattern : null, zoneBoxes(sheet));
   $("preview").classList.toggle("picture", show && Boolean(currentPattern));
   $("sheet-label").textContent = sheet
     ? `${sheetIndex + 1}/${sheets.length}  ${sheet.stem}  (${sheet.w.toFixed(0)} x ${sheet.h.toFixed(0)} mm)`
     : "";
+}
+
+/** Detail zones in sheet mm, for the preview. */
+function zoneBoxes(sheet: SheetOut | null): number[][] {
+  const picture = sheet?.items[0]?.picture;
+  if (!picture || settings.kit_type !== "paint_by_number") return [];
+  const [[ox, oy], [qx], [, qy]] = picture;
+  try {
+    return parseZones(settings.pbn_zones).map(([x0, y0, x1, y1]) =>
+      [ox + x0 * (qx - ox), oy + y0 * (qy - oy), (x1 - x0) * (qx - ox), (y1 - y0) * (qy - oy)]);
+  } catch {
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------- pictures
@@ -379,6 +462,7 @@ async function useFile(file: File): Promise<void> {
     const image = await decodeImage(bytes, file.type);
     picture = { id: `file:${file.name}:${file.size}:${file.lastModified}`, image };
     settings.image = file.name;
+    settings.pbn_zones = ""; // zones belong to the old picture
     $<HTMLInputElement>("show-picture").checked = true;
     writeForm();
     changed();
@@ -400,6 +484,7 @@ async function pickEmoji(): Promise<void> {
   const code = await new EmojiPicker(set).open();
   if (!code) return;
   settings.image = set.imageValue(code);
+  settings.pbn_zones = ""; // zones belong to the old picture
   settings.rows = settings.cols; // emoji are square
   $<HTMLInputElement>("show-picture").checked = true;
   pending = `Emoji: ${set.name(code) || code}, grid set to ${settings.cols} x ${settings.cols}.`;

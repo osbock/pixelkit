@@ -58,6 +58,10 @@ export interface Settings {
   pbn_line_width: number;   // outline width when printing, mm
   pbn_text_min: number;     // smallest number, mm
   pbn_text_max: number;     // largest number, mm
+  pbn_zones: string;        // detail zones: "x0,y0,x1,y1;..." as fractions of the grid
+  pbn_zone_area: number;    // min area inside a zone, mm^2
+  pbn_zone_width: number;   // min width inside a zone, mm
+  pbn_zone_colors: number;  // most colors a zone may add to the palette
   canvas: string;           // paint by number: board size preset, "custom", or "off" (size from the grid)
   canvas_landscape: boolean; // turn a preset canvas sideways
   canvas_width: number;     // custom canvas, mm
@@ -103,6 +107,10 @@ export const DEFAULTS: Settings = {
   pbn_line_width: 0.3,
   pbn_text_min: 2,
   pbn_text_max: 6,
+  pbn_zones: "",
+  pbn_zone_area: 0.25,
+  pbn_zone_width: 0,
+  pbn_zone_colors: 2,
   canvas: "off",
   canvas_landscape: false,
   canvas_width: 203.2,
@@ -111,14 +119,14 @@ export const DEFAULTS: Settings = {
   name: "pixelart",
 };
 
-export const INT_FIELDS = new Set<keyof Settings>(["cols", "rows", "colors"]);
+export const INT_FIELDS = new Set<keyof Settings>(["cols", "rows", "colors", "pbn_zone_colors"]);
 
 /** Settings that only one kind of kit uses; the UI hides the others. */
 export const MOSAIC_ONLY = new Set<keyof Settings>(["tile_thickness", "tray_thickness", "kerf", "tile_kerf",
   "tray_style", "tile_clearance", "lip", "finger_width", "joint_play", "frame_width", "engrave_grid",
   "engrave_numbers", "spacing", "tile_border", "spare_percent", "tile_sheets", "tile_tabs", "tab_width"]);
 export const PBN_ONLY = new Set<keyof Settings>(["pbn_use", "pbn_min_area", "pbn_min_width", "pbn_simplify", "pbn_smooth", "pbn_margin",
-  "pbn_line_width", "pbn_text_min", "pbn_text_max", "canvas", "canvas_landscape", "canvas_width", "canvas_height",
+  "pbn_line_width", "pbn_text_min", "pbn_text_max", "pbn_zones", "pbn_zone_area", "pbn_zone_width", "pbn_zone_colors", "canvas", "canvas_landscape", "canvas_width", "canvas_height",
   "canvas_fit"]);
 
 /** [width, height] of the paint-by-number canvas in mm, or null when the
@@ -138,6 +146,29 @@ export function effectiveSettings(s: Settings): Settings {
   const fit = (len: number) => (s.pixel > 0 ? Math.floor((len - 2 * s.pbn_margin) / s.pixel) : 0);
   return { ...s, cols: fit(c[0]), rows: fit(c[1]) };
 }
+
+/** Detail zones from "x0,y0,x1,y1;...", fractions of the grid. Throws if the
+ * text isn't a list of boxes inside 0..1. */
+export function parseZones(text: string): [number, number, number, number][] {
+  const zones: [number, number, number, number][] = [];
+  for (const part of text.split(";")) {
+    if (!part.trim()) continue;
+    const v = part.split(",").map((n) => (n.trim() ? Number(n) : NaN));
+    const [x0, y0, x1, y1] = v;
+    if (v.length !== 4 || !(x0 >= 0 && x0 < x1 && x1 <= 1 && y0 >= 0 && y0 < y1 && y1 <= 1)) throw new Error(part);
+    zones.push([x0, y0, x1, y1]);
+  }
+  return zones;
+}
+
+/** Detail zones as [i0, j0, i1, j1] cell ranges of the effective grid. */
+export function zoneCells(s: Settings): [number, number, number, number][] {
+  return parseZones(s.pbn_zones).map(([x0, y0, x1, y1]) =>
+    [Math.floor(x0 * s.cols), Math.floor(y0 * s.rows), Math.ceil(x1 * s.cols), Math.ceil(y1 * s.rows)]);
+}
+
+export const cellsFor = (area: number, p: number) => Math.max(1, Math.ceil(area / (p * p) - 1e-9));
+export const depthFor = (width: number, p: number) => Math.max(1, Math.ceil((width / p + 1) / 2 - 1e-9)); // widest square (2d - 1) cells
 
 export function withDefaults(partial: Partial<Settings>): Settings {
   return { ...DEFAULTS, ...partial };
@@ -204,6 +235,14 @@ export function validate(s: Settings): string[] {
     if (!s.image) problems.push("Paint by number needs a picture.");
     if (s.pbn_min_area < 0 || s.pbn_min_width < 0 || s.pbn_simplify < 0) {
       problems.push("Min area, min width and simplify can't be negative.");
+    }
+    if (s.pbn_zone_area < 0 || s.pbn_zone_width < 0 || s.pbn_zone_colors < 1) {
+      problems.push("Zone area and width can't be negative, and zones need at least 1 color.");
+    }
+    try {
+      parseZones(s.pbn_zones);
+    } catch {
+      problems.push("Detail zones must look like x0,y0,x1,y1;... with fractions from 0 to 1.");
     }
     if (!(s.pbn_text_min > 0 && s.pbn_text_min <= s.pbn_text_max)) {
       problems.push("Number sizes must be positive, with the minimum no larger than the maximum.");

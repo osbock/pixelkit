@@ -112,6 +112,9 @@ CLI flags (`--snake-case` → `--kebab-case`) and keys in saved JSON.
 | `pbn_margin` | float | 10.0 | Board border around the picture |
 | `pbn_line_width` | float | 0.3 | Outline width when printing |
 | `pbn_text_min`, `pbn_text_max` | float | 2.0, 6.0 | Number size limits |
+| `pbn_zones` | str | "" | Detail zones `x0,y0,x1,y1;...`, fractions of the grid (§15) |
+| `pbn_zone_area`, `pbn_zone_width` | float | 0.25, 0.0 | Absorbing limits inside a zone |
+| `pbn_zone_colors` | int | 2 | Most colors each zone may add |
 | `canvas` | choice | `off` | Paint-by-number board size: a preset, `custom` or `off` (§15) |
 | `canvas_landscape` | bool | false | Turn a preset sideways |
 | `canvas_width`, `canvas_height` | float | 203.2, 254.0 | Custom canvas size |
@@ -784,7 +787,32 @@ A reimplementation should pass these checks.
 
 With `kit_type = paint_by_number`, pixelkit makes one numbered board instead
 of a tray and tiles. The picture is processed exactly as for a mosaic (§9),
-then:
+except for detail zones, then:
+
+**Detail zones** are boxes, as fractions of the grid: cell ranges are
+⌊x0·cols⌋, ⌊y0·rows⌋ to ⌈x1·cols⌉, ⌈y1·rows⌉. They apply to paint by number
+only. Each is processed in order, after color reduction and before the
+majority vote, over the samples it covers (with merge distance 24):
+
+1. Pool the zone's raw colors in bins of 8 levels per channel, taking each
+   bin's mean rounded down, in bin order.
+2. Skip bins within merge distance of a known color. For each other bin, group
+   the bins within merge distance of it; a candidate is the group's weighted
+   mean, with the group's sample count.
+3. Up to `pbn_zone_colors` times, add the candidate farthest from all colors
+   so far. It must be at least merge distance away and have at least
+   max(1, ⌊min cells for pbn_zone_area / 2⌋) · sub² samples. Earlier candidates
+   win ties.
+4. Any sample at least merge distance from its assigned color moves to the
+   nearest known color. Other samples stay put, so flat areas and the zone's
+   edge don't change.
+
+Why this and not a second quantizer: a highlight is a tiny share of a zone, so
+median cut never gives it a box, and it is often near a palette color already
+but was assigned a dark one. In step 2 of the region stages below, a region
+with at least half its cells in zones uses thresholds from `pbn_zone_area` and
+`pbn_zone_width`. A number centred in a zone may shrink to half of
+`pbn_text_min`.
 
 1. **Regions:** 4-connected cells of one color, labelled in row-major
    discovery order. The flood fill visits up, down, left, right.
@@ -941,6 +969,11 @@ then:
   - aggressive absorbing (min area 600 mm², min width 10 mm, margin 0);
   - a high-resolution sample JPEG on 8×10 in at 0.4 mm;
   - canvases: 8×10 in fit with an enlarged emoji, 12×16 in landscape fill,
-    custom 150 × 100 mm fill, and 30×40 cm fit in print mode.
+    custom 150 × 100 mm fill, and 30×40 cm fit in print mode;
+  - detail zones on a padded fit and on a fill with colors added.
+- **Detail zones:** a small light spot on a dark field survives inside a zone
+  and is absorbed without one; cells outside zones keep their colors; a region
+  mostly outside uses the normal limits; mosaics ignore zones; malformed zone
+  text is reported.
 - **Canvas grid:** 8×10 in at 3 mm gives 61 × 78 cells on a 203.2 × 254 mm
   board.

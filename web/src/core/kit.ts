@@ -11,7 +11,7 @@ import {
 import { composite, loadPattern, type Pattern, type RGBAImage, scaledImage } from "./pattern";
 import { type Board, buildPbn, pbnKeySvg, pbnPreviewSvg, pbnSvg } from "./pbn";
 import { fixed, g } from "./py";
-import { canvasMm, effectiveSettings, parseColor, type Settings, validate } from "./settings";
+import { canvasMm, cellsFor, effectiveSettings, parseColor, type Settings, validate, zoneCells } from "./settings";
 import { hexcolor, patternSvg, sheetSvg } from "./svg";
 
 export interface SheetOut { stem: string; w: number; h: number; items: Piece[] }
@@ -30,7 +30,10 @@ export function patternFor(s: Settings, picture: RGBAImage): Pattern {
   const label = isEmoji(s.image) ? `emoji:${emojiCode(s.image)}` : "image";
   const fit = canvasMm(s) ? s.canvas_fit : null;
   const e = effectiveSettings(s);
-  const pattern = loadPattern(composite(picture, parseColor(s.background)!), e.cols, e.rows, s.colors, label, fit);
+  const zones = s.kit_type === "paint_by_number" ? zoneCells(e) : [];
+  const spot = Math.max(1, Math.floor(cellsFor(s.pbn_zone_area, s.pixel) / 2)); // colors need only half a region's worth of cells
+  const pattern = loadPattern(composite(picture, parseColor(s.background)!), e.cols, e.rows, s.colors, label, fit, zones,
+    s.pbn_zone_colors, spot);
   pattern.source = isEmoji(s.image) ? s.image : (picture.source ?? "");
   return pattern;
 }

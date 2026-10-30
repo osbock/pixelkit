@@ -95,6 +95,10 @@ class Settings:
     pbn_line_width: float = 0.3    # outline width when printing, mm
     pbn_text_min: float = 2.0      # smallest number, mm
     pbn_text_max: float = 6.0      # largest number, mm
+    pbn_zones: str = ""            # detail zones: "x0,y0,x1,y1;..." as fractions of the grid
+    pbn_zone_area: float = 0.25    # min area inside a zone, mm^2
+    pbn_zone_width: float = 0.0    # min width inside a zone, mm
+    pbn_zone_colors: int = 2       # most colors a zone may add to the palette
     canvas: str = "off"            # paint by number: board size preset, "custom", or "off" (size from the grid)
     canvas_landscape: bool = False # turn a preset canvas sideways
     canvas_width: float = 203.2    # custom canvas, mm
@@ -773,6 +777,59 @@ def reduce_colors(pixels, max_colors, merge_dist=24.0):
     return [remap[px] for px in pixels]
 
 
+def add_zone_colors(raw, pixels, width, boxes, max_colors, min_samples, merge_dist=24.0):
+    """Give each detail zone its own colors: the small bright or dark spots
+    that the whole picture's palette has no entry for, like a highlight in an
+    eye. Repeatedly takes the color farthest from every color so far, if at
+    least min_samples pixels are near it (colors are pooled in 32-level bins).
+    Only pixels far from their assigned color then move to the nearest color,
+    so flat areas and the zone's edge don't change. `boxes` are (x0, y0, x1,
+    y1) sample ranges. Returns the number of colors added."""
+    d2 = lambda a, b: (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2])
+    near2 = merge_dist * merge_dist
+    known = sorted(set(pixels))
+    added = 0
+    for x0, y0, x1, y1 in boxes:
+        spots = [y * width + x for y in range(y0, y1) for x in range(x0, x1)]
+        bins = {}
+        for k in spots:
+            r, g, b = raw[k]
+            sums = bins.setdefault((r >> 3, g >> 3, b >> 3), [0, 0, 0, 0])
+            sums[0] += r
+            sums[1] += g
+            sums[2] += b
+            sums[3] += 1
+        pool = [(s[0] // s[3], s[1] // s[3], s[2] // s[3], s[3]) for _, s in sorted(bins.items())]
+        spotted = []  # (color, samples near it)
+        for c in pool:
+            if any(d2(c, k) < near2 for k in known):
+                continue
+            group = [q for q in pool if d2(c, q) < near2]
+            n = sum(q[3] for q in group)
+            spotted.append((tuple(sum(q[ch] * q[3] for q in group) // n for ch in range(3)), n))
+        fresh = []
+        while len(fresh) < max_colors:
+            best, far = None, near2 - 1
+            for c, n in spotted:
+                d = min(d2(c, k) for k in known + fresh)
+                if n >= min_samples and d > far:
+                    best, far = c, d
+            if best is None:
+                break
+            fresh.append(best)
+        known += fresh
+        for k in spots:
+            best, near = pixels[k], d2(raw[k], pixels[k])
+            if near >= near2:  # badly matched: a highlight lumped in with the dark around it
+                for c in known:
+                    d = d2(raw[k], c)
+                    if d < near:
+                        best, near = c, d
+                pixels[k] = best
+        added += len(fresh)
+    return added
+
+
 def detect_grid(path):
     """Guess the pixel-art grid (cols, rows) of an image, e.g. 40 x 50 for
     art drawn on a 40 x 50 grid and saved at 1856 x 2304 px. Returns None if
@@ -821,7 +878,7 @@ def detect_grid(path):
     return max(1, round(w / cell)), max(1, round(h / cell))
 
 
-def load_pattern(path, cols, rows, max_colors, background="#ffffff", fit=None):
+def load_pattern(path, cols, rows, max_colors, background="#ffffff", fit=None, zones=(), zone_colors=2, zone_spot=1):
     """Reduce an image to a cols x rows grid of palette indices, most common
     color first.
 
@@ -833,7 +890,9 @@ def load_pattern(path, cols, rows, max_colors, background="#ffffff", fit=None):
 
     For canvases, fit="fit" also enlarges a small picture (nearest pixel, so
     colors stay flat) until it fits, and fit="fill" first crops the picture,
-    centred, to the grid's shape so it covers the whole grid."""
+    centred, to the grid's shape so it covers the whole grid.
+
+    `zones` are (i0, j0, i1, j1) cell ranges that also get add_zone_colors."""
     from PIL import Image
 
     resampling = getattr(Image, "Resampling", Image)
@@ -865,8 +924,16 @@ def load_pattern(path, cols, rows, max_colors, background="#ffffff", fit=None):
         nh = rows if fit == "fill" else min(rows, max(1, round(h * scale)))
         im = im.resize((nw, nh), resampling.NEAREST)
         note += f" enlarged to {nw} x {nh} (nearest pixel)"
-    pixels = reduce_colors(list(im.getdata()), max_colors)
+    raw = list(im.getdata())
+    pixels = reduce_colors(raw, max_colors)
     iw = nw * sub
+    ox, oy = (cols - nw) // 2, (rows - nh) // 2
+    if zones:
+        boxes = [(max(0, i0 - ox) * sub, max(0, j0 - oy) * sub, min(nw, i1 - ox) * sub, min(nh, j1 - oy) * sub)
+                 for i0, j0, i1, j1 in zones]
+        added = add_zone_colors(raw, pixels, iw, boxes, zone_colors, zone_spot * sub * sub)
+        if added:
+            note += f", {added} color(s) added in detail zones"
     cells = []
     for j in range(nh):
         row = []
@@ -880,7 +947,6 @@ def load_pattern(path, cols, rows, max_colors, background="#ffffff", fit=None):
     if (nw, nh) != (cols, rows):
         border = cells[0] + cells[-1] + [r[0] for r in cells] + [r[-1] for r in cells]
         bg = max(set(border), key=border.count)
-        ox, oy = (cols - nw) // 2, (rows - nh) // 2
         cells = [[cells[j - oy][i - ox] if 0 <= j - oy < nh and 0 <= i - ox < nw else bg
                   for i in range(cols)] for j in range(rows)]
         note += f", centred and padded with {hexcolor(bg)}"
@@ -1019,12 +1085,14 @@ def region_depths(grid, lab):
     return depth
 
 
-def absorb_small_regions(grid, min_cells, min_depth):
+def absorb_small_regions(grid, min_cells, min_depth, zones=(), zone_cells=1, zone_depth=1):
     """Remove regions too small (under min_cells) or too thin (no cell
     min_depth deep) to paint and number. Their cells go to the surrounding
     regions, which grow into them together (4-neighbour BFS from every kept
     cell, row-major): a speck fills in, and a fringe between two areas
-    splits down the middle. Returns (new grid, number of regions removed)."""
+    splits down the middle. A region at least half inside `zones` (cell
+    ranges) has the zone limits instead. Returns (new grid, number of regions
+    removed)."""
     rows, cols = len(grid), len(grid[0])
     lab, sizes = label_regions(grid)
     depth = region_depths(grid, lab)
@@ -1033,7 +1101,11 @@ def absorb_small_regions(grid, min_cells, min_depth):
         for i in range(cols):
             if depth[j][i] > deepest[lab[j][i]]:
                 deepest[lab[j][i]] = depth[j][i]
-    keep = [sizes[r] >= min_cells and deepest[r] >= min_depth for r in range(len(sizes))]
+    inside = [0] * len(sizes)
+    for j, i in sorted({(j, i) for i0, j0, i1, j1 in zones for j in range(j0, j1) for i in range(i0, i1)}):
+        inside[lab[j][i]] += 1
+    keep = [sizes[r] >= (zone_cells if 2 * inside[r] >= sizes[r] else min_cells)
+            and deepest[r] >= (zone_depth if 2 * inside[r] >= sizes[r] else min_depth) for r in range(len(sizes))]
     removed = keep.count(False)
     if removed == 0 or removed == len(sizes):
         return grid, 0
@@ -1316,13 +1388,41 @@ def pbn_layout(s, cols, rows):
     return cols * p + 2 * s.pbn_margin, rows * p + 2 * s.pbn_margin, s.pbn_margin, s.pbn_margin
 
 
+def parse_zones(text):
+    """Detail zones from "x0,y0,x1,y1;...", fractions of the grid. Raises
+    ValueError if the text isn't a list of boxes inside 0..1."""
+    zones = []
+    for part in text.split(";"):
+        if part.strip():
+            x0, y0, x1, y1 = [float(v) for v in part.split(",")]
+            if not 0 <= x0 < x1 <= 1 or not 0 <= y0 < y1 <= 1:
+                raise ValueError(part)
+            zones.append((x0, y0, x1, y1))
+    return zones
+
+
+def zone_cells(s):
+    """Detail zones as (i0, j0, i1, j1) cell ranges of the effective grid."""
+    return [(math.floor(x0 * s.cols), math.floor(y0 * s.rows), math.ceil(x1 * s.cols), math.ceil(y1 * s.rows))
+            for x0, y0, x1, y1 in parse_zones(s.pbn_zones)]
+
+
+def cells_for(area, p):
+    return max(1, math.ceil(area / (p * p) - 1e-9))
+
+
+def depth_for(width, p):
+    return max(1, math.ceil((width / p + 1) / 2 - 1e-9))  # widest square (2d - 1) cells
+
+
 def build_pbn(s, pattern):
     """Paint-by-number board from a pattern. Returns (board piece, width,
     height, merged pattern, regions per color, notes)."""
     p = s.pixel
-    min_cells = max(1, math.ceil(s.pbn_min_area / (p * p) - 1e-9))
-    min_depth = max(1, math.ceil((s.pbn_min_width / p + 1) / 2 - 1e-9))  # widest square (2d - 1) cells
-    grid, merged = absorb_small_regions(pattern["grid"], min_cells, min_depth)
+    min_cells, min_depth = cells_for(s.pbn_min_area, p), depth_for(s.pbn_min_width, p)
+    zones = zone_cells(s)
+    grid, merged = absorb_small_regions(pattern["grid"], min_cells, min_depth, zones,
+                                        cells_for(s.pbn_zone_area, p), depth_for(s.pbn_zone_width, p))
     # Renumber colors by tile count, as for mosaics (merging changes counts).
     counts = defaultdict(int)
     for row in grid:
@@ -1368,8 +1468,10 @@ def build_pbn(s, pattern):
         text = str(idx + 1)
         room = (2 * d - 1) * p
         size = min(s.pbn_text_max, 0.8 * room, 0.8 * room / (0.6 * len(text)))
-        if size < s.pbn_text_min:
-            size = s.pbn_text_min
+        # Zones hold more, smaller regions, so their numbers may go down to half the minimum.
+        least = s.pbn_text_min / 2 if any(i0 <= i < i1 and j0 <= j < j1 for i0, j0, i1, j1 in zones) else s.pbn_text_min
+        if size < least:
+            size = least
             tight += 1
         cx, cy = ox + (i + 0.5) * p, oy + (j + 0.5) * p
         board.texts.append((cx, cy + size * 0.35, size, text, 0.0, "middle"))
@@ -1382,6 +1484,9 @@ def build_pbn(s, pattern):
         + (f", {merged} region(s) smaller than {s.pbn_min_area:g} mm\u00b2 or narrower than {s.pbn_min_width:g} mm "
            "absorbed by their neighbours" if merged else ""),
     ]
+    if zones:
+        notes.append(f"{len(zones)} detail zone(s): regions down to {s.pbn_zone_area:g} mm\u00b2 and "
+                     f"{s.pbn_zone_width:g} mm wide kept.")
     c = canvas_mm(s)
     if c:
         name = "custom" if s.canvas == "custom" else s.canvas + (" landscape" if s.canvas_landscape else "")
@@ -1519,6 +1624,12 @@ def validate(s):
             problems.append("Paint by number needs a picture.")
         if s.pbn_min_area < 0 or s.pbn_min_width < 0 or s.pbn_simplify < 0:
             problems.append("Min area, min width and simplify can't be negative.")
+        if s.pbn_zone_area < 0 or s.pbn_zone_width < 0 or s.pbn_zone_colors < 1:
+            problems.append("Zone area and width can't be negative, and zones need at least 1 color.")
+        try:
+            parse_zones(s.pbn_zones)
+        except ValueError:
+            problems.append("Detail zones must look like x0,y0,x1,y1;... with fractions from 0 to 1.")
         if not 0 < s.pbn_text_min <= s.pbn_text_max:
             problems.append("Number sizes must be positive, with the minimum no larger than the maximum.")
         if s.pbn_line_width <= 0 or s.pbn_margin < 0:
@@ -1536,7 +1647,10 @@ def build(s):
         raise ValueError("\n".join(problems))
     fit = s.canvas_fit if canvas_mm(s) else None
     s = effective_settings(s)
-    pattern = load_pattern(s.image, s.cols, s.rows, s.colors, s.background, fit) if s.image else None
+    zones = zone_cells(s) if s.kit_type == "paint_by_number" else []
+    spot = max(1, cells_for(s.pbn_zone_area, s.pixel) // 2)  # colors need only half a region's worth of cells
+    pattern = (load_pattern(s.image, s.cols, s.rows, s.colors, s.background, fit, zones, s.pbn_zone_colors, spot)
+               if s.image else None)
     notes = [pattern["note"]] if pattern else []
     if pattern and is_emoji(pattern["source"]):
         notes.append(EMOJI_CREDIT)
@@ -1759,7 +1873,9 @@ FORM = [
                          ("pbn_min_width", "Min width (mm)"), ("pbn_simplify", "Simplify (mm)"),
                          ("pbn_smooth", "Smooth outlines"), ("pbn_margin", "Board margin (mm)"),
                          ("pbn_line_width", "Print line width (mm)"), ("pbn_text_min", "Min number (mm)"),
-                         ("pbn_text_max", "Max number (mm)")]),
+                         ("pbn_text_max", "Max number (mm)"), ("pbn_zones", "Detail zones"),
+                         ("pbn_zone_area", "Zone min area (mm\u00b2)"), ("pbn_zone_width", "Zone min width (mm)"),
+                         ("pbn_zone_colors", "Zone extra colors")]),
     ("Output", [("output_dir", "Folder"), ("name", "Name prefix")]),
 ]
 FORM_COLUMNS = (FORM[:4], FORM[4:])
@@ -1815,6 +1931,7 @@ def run_gui():
     def browse_image():
         p = filedialog.askopenfilename(filetypes=[("Images", "*.png *.gif *.bmp *.jpg *.jpeg *.webp"), ("All", "*")])
         if p:
+            vars_["pbn_zones"].set("")  # zones belong to the old picture
             vars_["image"].set(p)
             show_picture.set(True)
 
@@ -1890,6 +2007,7 @@ def run_gui():
             code = code or chosen["code"]
             if not code:
                 return
+            vars_["pbn_zones"].set("")  # zones belong to the old picture
             vars_["image"].set(emoji_image_value(code))
             show_picture.set(True)
             vars_["rows"].set(vars_["cols"].get())
@@ -1934,6 +2052,7 @@ def run_gui():
             vars_["output_dir"].set(p)
 
     rows_of = defaultdict(list)  # setting -> its widgets, for greying out
+    marking = tk.BooleanVar(value=False)  # dragging on the preview marks a detail zone
 
     for col_idx, sections in enumerate(FORM_COLUMNS):
         column = ttk.Frame(form)
@@ -1956,7 +2075,7 @@ def run_gui():
                         w = ttk.Combobox(box, textvariable=var, values=CHOICES[key], state="readonly",
                                          width=14 if key == "kit_type" else 9)
                     else:
-                        width = 22 if key in ("image", "output_dir") else 9
+                        width = 22 if key in ("image", "output_dir", "pbn_zones") else 9
                         w = ttk.Entry(box, textvariable=var, width=width)
                     w.grid(row=r, column=1, sticky="w")
                     rows_of[key] += [lab, w]
@@ -1967,6 +2086,15 @@ def run_gui():
                             row=r + 10, column=0, columnspan=2, sticky="w", pady=(4, 0))
                         ttk.Button(box, text="Edit pixels…", command=lambda: edit_pixels()).grid(
                             row=r + 10, column=2, columnspan=2, sticky="w", pady=(4, 0))
+                    elif key == "pbn_zones":
+                        zone_row = ttk.Frame(box)
+                        zone_row.grid(row=r + 20, column=0, columnspan=4, sticky="w", pady=(4, 0))
+                        mark = ttk.Checkbutton(zone_row, text="Mark zones", variable=marking)
+                        undo_zone = ttk.Button(zone_row, text="Undo zone", command=lambda: drop_zone(False))
+                        clear_zones = ttk.Button(zone_row, text="Clear", command=lambda: drop_zone(True))
+                        for z in (mark, undo_zone, clear_zones):
+                            z.pack(side="left", padx=(0, 4))
+                            rows_of[key].append(z)
                     elif key == "output_dir":
                         ttk.Button(box, text="…", width=2, command=browse_dir).grid(row=r, column=2)
                     elif key == "background":
@@ -1994,6 +2122,7 @@ def run_gui():
         k = min((cw - 20) / w, (ch - 20) / h)
         ox, oy = (cw - w * k) / 2, (ch - h * k) / 2
         canvas.create_rectangle(ox, oy, ox + w * k, oy + h * k, fill="#e8d9b5", outline="#999")
+        state["view"] = (ox, oy, k)
         pattern = state["pattern"] if show_picture.get() else None
         for pc in items:
             if pattern and pc.picture:
@@ -2025,6 +2154,59 @@ def run_gui():
                                        fill={PBN_NUMBER: "#109a10", PBN_PRINT_NUMBER: "#555555"}.get(
                                            getattr(pc, "text_color", ""), "#2b4fd6"),
                                        angle=-ang, font=("TkDefaultFont", max(6, int(size * k * 0.8))))
+            if is_board(pc):
+                (px, py), (qx, _), (_, qy) = pc.picture
+                try:
+                    zones = parse_zones(vars_["pbn_zones"].get())
+                except ValueError:
+                    zones = []
+                for x0, y0, x1, y1 in zones:
+                    canvas.create_rectangle(ox + (px + x0 * (qx - px)) * k, oy + (py + y0 * (qy - py)) * k,
+                                            ox + (px + x1 * (qx - px)) * k, oy + (py + y1 * (qy - py)) * k,
+                                            outline="#e0218a", dash=(4, 3))
+
+    def is_board(pc):
+        return pc.name == "paint_by_number" and pc.picture
+
+    def zone_fraction(e):
+        """Where a mouse event falls on the board's picture, as fractions of it."""
+        board = next((pc for pc in state["sheets"][state["i"]][3] if is_board(pc)), None) if state["sheets"] else None
+        if not board or "view" not in state:
+            return None
+        ox, oy, k = state["view"]
+        (px, py), (qx, _), (_, qy) = board.picture
+        clamp = lambda v: min(1.0, max(0.0, v))
+        return clamp(((e.x - ox) / k - px) / (qx - px)), clamp(((e.y - oy) / k - py) / (qy - py))
+
+    def zone_press(e):
+        if marking.get():
+            state["zone_from"] = zone_fraction(e)
+
+    def zone_drag(e):
+        a, b = state.get("zone_from"), zone_fraction(e)
+        canvas.delete("zone_drag")
+        if marking.get() and a and b:
+            ox, oy, k = state["view"]
+            (px, py), (qx, _), (_, qy) = next(pc for pc in state["sheets"][state["i"]][3] if is_board(pc)).picture
+            canvas.create_rectangle(ox + (px + a[0] * (qx - px)) * k, oy + (py + a[1] * (qy - py)) * k,
+                                    ox + (px + b[0] * (qx - px)) * k, oy + (py + b[1] * (qy - py)) * k,
+                                    outline="#e0218a", tags="zone_drag")
+
+    def zone_release(e):
+        a, b = state.pop("zone_from", None), zone_fraction(e)
+        canvas.delete("zone_drag")
+        if marking.get() and a and b:
+            x0, x1, y0, y1 = min(a[0], b[0]), max(a[0], b[0]), min(a[1], b[1]), max(a[1], b[1])
+            if x1 > x0 and y1 > y0:
+                old = vars_["pbn_zones"].get().strip()
+                box = f"{x0:.4f},{y0:.4f},{x1:.4f},{y1:.4f}"
+                vars_["pbn_zones"].set(f"{old};{box}" if old else box)
+                draw()  # a large board's preview waits for the button, but its zones shouldn't
+
+    def drop_zone(everything):
+        parts = [z for z in vars_["pbn_zones"].get().split(";") if z.strip()]
+        vars_["pbn_zones"].set("" if everything else ";".join(parts[:-1]))
+        draw()
 
     def show_tray_sheet():
         """Jump to the sheet holding the tray base if we're looking elsewhere."""
@@ -2294,6 +2476,9 @@ def run_gui():
     for v in vars_.values():
         v.trace_add("write", refresh_info)
     canvas.bind("<Configure>", lambda e: draw())
+    canvas.bind("<ButtonPress-1>", zone_press)
+    canvas.bind("<B1-Motion>", zone_drag)
+    canvas.bind("<ButtonRelease-1>", zone_release)
     refresh_info()
     root.mainloop()
 

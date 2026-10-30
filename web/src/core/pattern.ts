@@ -335,6 +335,79 @@ export function reduceColors(pixels: number[], maxColors: number, mergeDist = 24
   return pixels.map((p) => remap.get(p)!);
 }
 
+/** Give each detail zone its own colors: the small bright or dark spots that
+ * the whole picture's palette has no entry for, like a highlight in an eye.
+ * Repeatedly takes the color farthest from every color so far, if at least
+ * minSamples pixels are near it (colors are pooled in 32-level bins). Only
+ * pixels far from their assigned color then move to the nearest color, so
+ * flat areas and the zone's edge don't change. `boxes` are [x0, y0, x1, y1]
+ * sample ranges. Updates `pixels`; returns the number of colors added. */
+export function addZoneColors(raw: number[], pixels: number[], width: number, boxes: number[][], maxColors: number,
+  minSamples: number, mergeDist = 24): number {
+  const d2 = (a: readonly number[], b: readonly number[]) =>
+    (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]);
+  const near2 = mergeDist * mergeDist;
+  const known: RGB[] = [...new Set(pixels)].sort((a, b) => a - b).map(unpack);
+  let added = 0;
+  for (const [x0, y0, x1, y1] of boxes) {
+    const spots: number[] = [];
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) spots.push(y * width + x);
+    const bins = new Map<number, [number, number, number, number]>();
+    for (const k of spots) {
+      const [r, g, b] = unpack(raw[k]);
+      const key = pack(r >> 3, g >> 3, b >> 3);
+      let sums = bins.get(key);
+      if (!sums) bins.set(key, sums = [0, 0, 0, 0]);
+      sums[0] += r;
+      sums[1] += g;
+      sums[2] += b;
+      sums[3] += 1;
+    }
+    const pool = [...bins.keys()].sort((a, b) => a - b).map((key) => {
+      const s = bins.get(key)!;
+      return [Math.floor(s[0] / s[3]), Math.floor(s[1] / s[3]), Math.floor(s[2] / s[3]), s[3]];
+    });
+    const spotted: { color: RGB; n: number }[] = []; // colors with the samples near them
+    for (const c of pool) {
+      if (known.some((k) => d2(c, k) < near2)) continue;
+      const group = pool.filter((q) => d2(c, q) < near2);
+      const n = group.reduce((sum, q) => sum + q[3], 0);
+      const mean = (ch: number) => Math.floor(group.reduce((sum, q) => sum + q[ch] * q[3], 0) / n);
+      spotted.push({ color: [mean(0), mean(1), mean(2)], n });
+    }
+    const fresh: RGB[] = [];
+    while (fresh.length < maxColors) {
+      let best: RGB | null = null, far = near2 - 1;
+      for (const { color, n } of spotted) {
+        let dist = Infinity;
+        for (const k of [...known, ...fresh]) dist = Math.min(dist, d2(color, k));
+        if (n >= minSamples && dist > far) {
+          best = color;
+          far = dist;
+        }
+      }
+      if (!best) break;
+      fresh.push(best);
+    }
+    known.push(...fresh);
+    for (const k of spots) {
+      const px = unpack(raw[k]);
+      let best = pixels[k], near = d2(px, unpack(best));
+      if (near < near2) continue; // only badly matched: a highlight lumped in with the dark around it
+      for (const c of known) {
+        const dist = d2(px, c);
+        if (dist < near) {
+          best = pack(...c);
+          near = dist;
+        }
+      }
+      pixels[k] = best;
+    }
+    added += fresh.length;
+  }
+  return added;
+}
+
 /** Reduce a picture to a cols x rows grid of palette indices, most common
  * color first. A picture larger than the grid is scaled down to fit inside it
  * keeping its aspect ratio; one that already fits is used 1:1. Leftover
@@ -350,9 +423,10 @@ export function cropImage(img: RGBImage, x0: number, y0: number, w: number, h: n
 
 /** For canvases, fit="fit" also enlarges a small picture (nearest pixel, so
  * colors stay flat) until it fits, and fit="fill" first crops the picture,
- * centred, to the grid's shape so it covers the whole grid. */
+ * centred, to the grid's shape so it covers the whole grid. `zones` are
+ * [i0, j0, i1, j1] cell ranges that also get addZoneColors. */
 export function loadPattern(img: RGBImage, cols: number, rows: number, maxColors: number, label: string,
-  fit: "fit" | "fill" | null = null): Pattern {
+  fit: "fit" | "fill" | null = null, zones: number[][] = [], zoneColors = 2, zoneSpot = 1): Pattern {
   let w = img.width, h = img.height;
   let note = `Pattern: ${label} ${w} x ${h} px`;
   let im = img;
@@ -386,6 +460,13 @@ export function loadPattern(img: RGBImage, cols: number, rows: number, maxColors
   for (let i = 0; i < raw.length; i++) raw[i] = pack(im.data[i * 3], im.data[i * 3 + 1], im.data[i * 3 + 2]);
   const pixels = reduceColors(raw, maxColors);
   const iw = nw * sub;
+  const ox = Math.floor((cols - nw) / 2), oy = Math.floor((rows - nh) / 2);
+  if (zones.length) {
+    const boxes = zones.map(([i0, j0, i1, j1]) =>
+      [Math.max(0, i0 - ox) * sub, Math.max(0, j0 - oy) * sub, Math.min(nw, i1 - ox) * sub, Math.min(nh, j1 - oy) * sub]);
+    const added = addZoneColors(raw, pixels, iw, boxes, zoneColors, zoneSpot * sub * sub);
+    if (added) note += `, ${added} color(s) added in detail zones`;
+  }
   let cells: number[][] = [];
   for (let j = 0; j < nh; j++) {
     const row: number[] = [];
@@ -406,7 +487,6 @@ export function loadPattern(img: RGBImage, cols: number, rows: number, maxColors
     const tally = new Map<number, number>();
     for (const c of border) tally.set(c, (tally.get(c) ?? 0) + 1);
     const bg = maxBy(tally.keys(), (c) => tally.get(c)!);
-    const ox = Math.floor((cols - nw) / 2), oy = Math.floor((rows - nh) / 2);
     cells = Array.from({ length: rows }, (_, j) =>
       Array.from({ length: cols }, (_, i) =>
         j - oy >= 0 && j - oy < nh && i - ox >= 0 && i - ox < nw ? cells[j - oy][i - ox] : bg));

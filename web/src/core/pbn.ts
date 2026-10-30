@@ -5,7 +5,7 @@
 import { Piece, type Pt, rectPts } from "./geometry";
 import type { Pattern } from "./pattern";
 import { cmp, fixed, g } from "./py";
-import { canvasMm, type Settings } from "./settings";
+import { canvasMm, cellsFor, depthFor, type Settings, zoneCells } from "./settings";
 import { CUT, esc, hexcolor, STROKE, textColor } from "./svg";
 
 export const PBN_LINE = "#0000ff";   // region outlines (LightBurn layer 01)
@@ -81,8 +81,10 @@ export function regionDepths(grid: Grid, labels: Grid): Grid {
  * deep) to paint and number. Their cells go to the surrounding regions,
  * which grow into them together (4-neighbour BFS from every kept cell,
  * row-major): a speck fills in, and a fringe between two areas splits down
- * the middle. */
-export function absorbSmallRegions(grid: Grid, minCells: number, minDepth: number): { grid: Grid; removed: number } {
+ * the middle. A region at least half inside `zones` (cell ranges) has the
+ * zone limits instead. */
+export function absorbSmallRegions(grid: Grid, minCells: number, minDepth: number, zones: number[][] = [],
+  zoneMinCells = 1, zoneMinDepth = 1): { grid: Grid; removed: number } {
   const rows = grid.length, cols = grid[0].length;
   const { labels, sizes } = labelRegions(grid);
   const depth = regionDepths(grid, labels);
@@ -90,7 +92,16 @@ export function absorbSmallRegions(grid: Grid, minCells: number, minDepth: numbe
   for (let j = 0; j < rows; j++) {
     for (let i = 0; i < cols; i++) if (depth[j][i] > deepest[labels[j][i]]) deepest[labels[j][i]] = depth[j][i];
   }
-  const keep = sizes.map((n, r) => n >= minCells && deepest[r] >= minDepth);
+  const inside = sizes.map(() => 0);
+  const marked = new Set<number>();
+  for (const [i0, j0, i1, j1] of zones) {
+    for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) marked.add(j * cols + i);
+  }
+  for (const c of marked) inside[labels[Math.floor(c / cols)][c % cols]]++;
+  const keep = sizes.map((n, r) => {
+    const zoned = 2 * inside[r] >= n;
+    return n >= (zoned ? zoneMinCells : minCells) && deepest[r] >= (zoned ? zoneMinDepth : minDepth);
+  });
   const removed = keep.filter((k) => !k).length;
   if (removed === 0 || removed === sizes.length) return { grid, removed: 0 };
   const out = grid.map((row) => row.slice());
@@ -377,9 +388,9 @@ export interface PbnResult { board: Board; w: number; h: number; pattern: Patter
 
 export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
   const p = s.pixel;
-  const minCells = Math.max(1, Math.ceil(s.pbn_min_area / (p * p) - 1e-9));
-  const minDepth = Math.max(1, Math.ceil((s.pbn_min_width / p + 1) / 2 - 1e-9)); // widest square (2d - 1) cells
-  const { grid: mergedGrid, removed: merged } = absorbSmallRegions(pattern.grid, minCells, minDepth);
+  const zones = zoneCells(s);
+  const { grid: mergedGrid, removed: merged } = absorbSmallRegions(pattern.grid, cellsFor(s.pbn_min_area, p),
+    depthFor(s.pbn_min_width, p), zones, cellsFor(s.pbn_zone_area, p), depthFor(s.pbn_zone_width, p));
   // Renumber colors by tile count, as for mosaics (merging changes counts).
   const counts = new Map<number, number>();
   for (const row of mergedGrid) for (const idx of row) counts.set(idx, (counts.get(idx) ?? 0) + 1);
@@ -422,8 +433,10 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
     const text = String(idx + 1);
     const room = (2 * d - 1) * p;
     let size = Math.min(s.pbn_text_max, 0.8 * room, (0.8 * room) / (0.6 * text.length));
-    if (size < s.pbn_text_min) {
-      size = s.pbn_text_min;
+    // Zones hold more, smaller regions, so their numbers may go down to half the minimum.
+    const least = zones.some(([i0, j0, i1, j1]) => i0 <= i && i < i1 && j0 <= j && j < j1) ? s.pbn_text_min / 2 : s.pbn_text_min;
+    if (size < least) {
+      size = least;
       tight++;
     }
     const cx = ox + (i + 0.5) * p, cy = oy + (j + 0.5) * p;
@@ -438,6 +451,10 @@ export function buildPbn(s: Settings, pattern: Pattern): PbnResult {
       (merged ? `, ${merged} region(s) smaller than ${g(s.pbn_min_area)} mm\u00b2 or narrower than ${g(s.pbn_min_width)} mm ` +
         "absorbed by their neighbours" : ""),
   ];
+  if (zones.length) {
+    notes.push(`${zones.length} detail zone(s): regions down to ${g(s.pbn_zone_area)} mm\u00b2 and ` +
+      `${g(s.pbn_zone_width)} mm wide kept.`);
+  }
   const c = canvasMm(s);
   if (c) {
     const name = s.canvas === "custom" ? "custom" : s.canvas + (s.canvas_landscape ? " landscape" : "");

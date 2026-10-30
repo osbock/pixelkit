@@ -6,11 +6,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { build, generate } from "../src/core/kit";
-import type { RGBAImage } from "../src/core/pattern";
+import type { Pattern, RGBAImage } from "../src/core/pattern";
 import {
   absorbSmallRegions, Board, labelRegions, numberSpots, outlineChains, PBN_LINE, PBN_NUMBER,
 } from "../src/core/pbn";
-import { canvasMm, DEFAULTS, effectiveSettings, type Settings, validate } from "../src/core/settings";
+import { canvasMm, DEFAULTS, effectiveSettings, parseZones, type Settings, validate } from "../src/core/settings";
 import { decode, decodePng, emoji, ROOT, sunflower, writePng } from "./helpers";
 
 const S = (p: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, kit_type: "paint_by_number", ...p });
@@ -70,6 +70,10 @@ function cases(): [string, Partial<Settings>, RGBAImage][] {
       canvas_fit: "fill", pixel: 0.5, colors: 9, pbn_simplify: 0.1 }, photo],
     ["high resolution, absorb + simplify", { image: png(jpeg), canvas: "8x10in", pixel: 0.4, colors: 12,
       pbn_min_area: 8, pbn_min_width: 2 }, jpeg],
+    ["detail zones, padded fit", { image: png(jpeg), canvas: "8x10in", pixel: 0.5, colors: 10,
+      pbn_zones: "0.3,0.2,0.5,0.35;0.6,0.25,0.8,0.4" }, jpeg],
+    ["detail zones, fill, colors added", { image: png(photo), canvas: "custom", canvas_width: 150, canvas_height: 100,
+      canvas_fit: "fill", pixel: 0.5, colors: 4, pbn_zones: "0.1,0.1,0.4,0.5", pbn_zone_colors: 3, pbn_zone_area: 1, pbn_zone_width: 0.5 }, photo],
     ["canvas 30x40cm, fit, print", { image: png(jpeg), canvas: "30x40cm", pixel: 3, pbn_use: "print",
       pbn_margin: 15 }, jpeg],
   ];
@@ -165,6 +169,59 @@ describe("paint by number structure", () => {
     expect(files.map((f) => f.name).sort()).toEqual(
       ["pixelart_notes.txt", "pixelart_pbn.svg", "pixelart_pbn_key.svg", "pixelart_pbn_preview.svg", "sunflower_scaled.png"]);
     expect(validate(S())).toContain("Paint by number needs a picture.");
+  });
+});
+
+describe("detail zones", () => {
+  // A dark field with a small light spot, and a mid-grey block so the palette has a near color.
+  const spotted = (): RGBAImage => {
+    const w = 400, h = 400, data = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const spot = Math.abs(x - 100) < 4 && Math.abs(y - 100) < 4;
+        const v = spot ? 230 : x >= 200 ? 120 : 20 + ((x + y) % 7);
+        data.set([v, v, v, 255], (y * w + x) * 4);
+      }
+    }
+    return { width: w, height: h, data };
+  };
+  const base = { image: "spot.png", cols: 200, rows: 200, pixel: 0.25, colors: 2 };
+
+  it("keeps a small spot inside a zone and absorbs it elsewhere", () => {
+    const light = (p: Pattern) => p.palette.filter(([r]) => r > 200).length;
+    expect(light(build(S(base), spotted()).pattern!)).toBe(0);
+    const zoned = build(S({ ...base, pbn_zones: "0.15,0.15,0.35,0.35" }), spotted());
+    expect(light(zoned.pattern!)).toBe(1);
+    expect(zoned.notes.join("\n")).toContain("1 detail zone(s)");
+  });
+
+  it("leaves everything outside the zones alone", () => {
+    const plain = build(S(base), spotted()).pattern!, zoned = build(S({ ...base, pbn_zones: "0.15,0.15,0.35,0.35" }), spotted()).pattern!;
+    const color = (p: Pattern, i: number, j: number) => p.palette[p.grid[j][i]].join();
+    for (let j = 0; j < 200; j += 7) {
+      for (let i = 0; i < 200; i += 7) {
+        if (i >= 30 && i < 70 && j >= 30 && j < 70) continue;
+        expect(color(zoned, i, j)).toBe(color(plain, i, j));
+      }
+    }
+  });
+
+  it("uses the normal limits for a region mostly outside the zone", () => {
+    const row = [0, 0, 0, 0, 0, 0];
+    const grid = [row.slice(), row.slice(), [0, 1, 1, 1, 1, 0], row.slice(), row.slice()];
+    expect(absorbSmallRegions(grid, 6, 1, [[1, 2, 2, 3]], 1, 1).removed).toBe(1); // 1 of 4 cells inside
+    expect(absorbSmallRegions(grid, 6, 1, [[1, 2, 3, 3]], 1, 1).removed).toBe(0); // 2 of 4
+  });
+
+  it("ignores zones for mosaics and rejects bad text", () => {
+    const mosaic = { ...base, kit_type: "mosaic" as const, cols: 20, rows: 20, pixel: 10 };
+    expect(build(S({ ...mosaic, pbn_zones: "0.15,0.15,0.35,0.35" }), spotted()).pattern!.palette)
+      .toEqual(build(S(mosaic), spotted()).pattern!.palette);
+    const problem = "Detail zones must look like x0,y0,x1,y1;... with fractions from 0 to 1.";
+    for (const bad of ["1,2", "0.5,0,0.2,1", "0,0,1.5,1", "a,b,c,d", "0,0,,1"]) {
+      expect(validate(S({ image: "x.png", pbn_zones: bad }))).toEqual([problem]);
+    }
+    expect(parseZones(" ; 0,0,1,1 ;")).toEqual([[0, 0, 1, 1]]);
   });
 });
 
