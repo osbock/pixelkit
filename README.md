@@ -242,7 +242,7 @@ All lengths are in mm.
 | `pbn_zones` | empty | Detail zones, `x0,y0,x1,y1;...` as fractions of the grid (usually marked on the preview) |
 | `pbn_zone_area`, `pbn_zone_width` | 0.25, 0 | Min area (mm²) and min width (mm) inside a zone |
 | `pbn_zone_colors` | 2 | Most colors each zone may add to the palette |
-| `canvas` | off | Paint by number: a board size preset (`8x10in`, `11x14in`, `12x12in`, `12x16in`, `16x20in`, `18x24in`, `20x30cm`, `30x40cm`, `40x50cm`), `custom`, or `off` to size the board from the grid |
+| `canvas` | off | Paint by number: a board size preset (`8x10in`, `9x12in`, `11x14in`, `12x12in`, `12x16in`, `16x20in`, `18x24in`, `20x30cm`, `30x40cm`, `40x50cm`), `custom`, or `off` to size the board from the grid |
 | `canvas_landscape` | off | Turn a preset sideways |
 | `canvas_width`, `canvas_height` | 203.2, 254 | Custom canvas size |
 | `canvas_fit` | fit | `fit`: the whole picture, with leftover space in the background color; `fill`: cover the canvas, cropping the overflow (centred) |

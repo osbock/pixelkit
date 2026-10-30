@@ -6,8 +6,8 @@ export const KIT_TYPES = ["mosaic", "paint_by_number"] as const;
 export const PBN_USES = ["engrave", "print"] as const;
 // Paint-by-number canvas presets, portrait [width, height] in mm.
 export const CANVAS_SIZES: Record<string, [number, number]> = {
-  "8x10in": [203.2, 254.0], "11x14in": [279.4, 355.6], "12x12in": [304.8, 304.8],
-  "12x16in": [304.8, 406.4], "16x20in": [406.4, 508.0], "18x24in": [457.2, 609.6],
+  "8x10in": [203.2, 254.0], "9x12in": [228.6, 304.8], "11x14in": [279.4, 355.6],
+  "12x12in": [304.8, 304.8], "12x16in": [304.8, 406.4], "16x20in": [406.4, 508.0], "18x24in": [457.2, 609.6],
   "20x30cm": [200.0, 300.0], "30x40cm": [300.0, 400.0], "40x50cm": [400.0, 500.0],
 };
 export const CANVASES = ["off", "custom", ...Object.keys(CANVAS_SIZES)] as const;

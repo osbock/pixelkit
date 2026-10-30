@@ -922,7 +922,7 @@ with at least half its cells in zones uses thresholds from `pbn_zone_area` and
     cells (desktop).
 
 12. **Canvas** (`canvas` other than `off`):
-    - **Presets:** 8×10, 11×14, 12×12, 12×16, 16×20 and 18×24 in, and 20×30,
+    - **Presets:** 8×10, 9×12, 11×14, 12×12, 12×16, 16×20 and 18×24 in, and 20×30,
       30×40 and 40×50 cm. The sizes are portrait (width, height) in mm, e.g.
       203.2 × 254.0; landscape swaps them. Custom uses `canvas_width` ×
       `canvas_height` as given.

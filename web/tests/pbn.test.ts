@@ -241,6 +241,7 @@ describe("paint by number canvases", () => {
 
   it("turns presets sideways and uses custom sizes as given", () => {
     expect(canvasMm(S({ canvas: "11x14in", canvas_landscape: true }))).toEqual([355.6, 279.4]);
+    expect(canvasMm(S({ canvas: "9x12in" }))).toEqual([228.6, 304.8]);
     expect(canvasMm(S({ canvas: "custom", canvas_width: 150, canvas_height: 100, canvas_landscape: true }))).toEqual([150, 100]);
     expect(canvasMm(S({ canvas: "off" }))).toBeNull();
     expect(canvasMm(S({ kit_type: "mosaic", canvas: "8x10in" }))).toBeNull(); // mosaics ignore it

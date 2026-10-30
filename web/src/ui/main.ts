@@ -47,7 +47,7 @@ const FORM: [string, FieldSpec[]][] = [
 const SETTINGS_KEY = "pixelkit-settings";
 const CHOICE_LABELS: Record<string, string> = {
   mosaic: "Mosaic tiles", paint_by_number: "Paint by number", off: "Off (grid size)", custom: "Custom",
-  "8x10in": "8 × 10 in", "11x14in": "11 × 14 in", "12x12in": "12 × 12 in", "12x16in": "12 × 16 in",
+  "8x10in": "8 × 10 in", "9x12in": "9 × 12 in", "11x14in": "11 × 14 in", "12x12in": "12 × 12 in", "12x16in": "12 × 16 in",
   "16x20in": "16 × 20 in", "18x24in": "18 × 24 in", "20x30cm": "20 × 30 cm", "30x40cm": "30 × 40 cm",
   "40x50cm": "40 × 50 cm", fit: "Fit (whole picture)", fill: "Fill (crop to cover)",
 };
